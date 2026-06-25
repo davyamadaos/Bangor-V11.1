@@ -1,486 +1,416 @@
 /**
 
-- Bangor River Level — app.js
+- Bangor River Level — app.js  (single-file bundle, no ES modules)
 - 
-- DATA PIPELINE (two sources, merged):
+- DATA PIPELINE:
+- 1. Fetch 3_months.zip via CORS proxy → JSZip → parse CSV → history[]
+- 1. Fetch PNG via CORS proxy → scan raw bytes for footer text → pngAnchor
+- 1. If pngAnchor is newer than last CSV row → append to allReadings[]
+- 1. interpolateNow()  → extrapolate from PNG anchor using trend slope
+- 1. computeTrend()   → linear regression on last 3h of CSV rows
+- 1. projectForecast() → anchor + slope × hours ahead
 - 
-- SOURCE 1 — ZIP/CSV (history):
-- https://epawebapp.epa.ie/Hydronet/output/internet/stations/CAS/33008/S/3_months.zip
-- Contains 15-min readings over 3 months. Can be up to 36h old.
-- Parsed into allReadings[].
-- 
-- SOURCE 2 — PNG footer OCR (most recent single value):
-- https://epawebapp.epa.ie/hydronet/output/internet/stations/CAS/33008/S/extralarge_3m_extralarge.png
-- Footer text: “Last value at DD.MM.YY HH:MM  XX.XXX m (TBM)”
-- Fetched as binary blob, regex-scanned for timestamp + level.
-- If newer than last CSV row → appended to allReadings[] as a synthetic point.
-- 
-- COMBINED RESULT:
-- allReadings[] = CSV history + PNG anchor point (if newer)
-- This gives a complete picture from 3 months ago up to ~15 min ago.
-- 
-- CURRENT LEVEL:
-- interpolateNow() linearly extrapolates from the last known point
-- (the PNG anchor) to the current clock time using the trend slope.
-- Displayed as the big gauge number.
-- 
-- FORECAST:
-- computeTrend() fits a least-squares line to the last 3h of readings.
-- projectForecast(h) evaluates that line at now + h hours.
-- Shown for +1h, +3h, +6h. Rate shown in cm/hr.
-- 
-- Gauge conversion: Gauge (m) = 14.664 × EPA_level(TBM) − 1452
+- Gauge = 14.664 × EPA_level(TBM) − 1452
   */
 
-import { renderChart, updateChart } from ‘./chart.js’;
-
-// ── URLs ──────────────────────────────────────────────────────────────────
-const ZIP_URL = ‘https://epawebapp.epa.ie/Hydronet/output/internet/stations/CAS/33008/S/3_months.zip’;
-const PNG_URL = ‘https://epawebapp.epa.ie/hydronet/output/internet/stations/CAS/33008/S/extralarge_3m_extralarge.png’;
-
-// CORS proxies — tried in order for both ZIP and PNG fetches.
-// For best reliability deploy cloudflare-worker.js (free, 2 min) and uncomment:
-//   url => `https://YOUR-WORKER.workers.dev?target=${encodeURIComponent(url)}`,
-const CORS_PROXIES = [
-url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
-];
-
-// ── Constants ─────────────────────────────────────────────────────────────
-const GAUGE_A        = 14.664;   // Gauge = GAUGE_A × EPA + GAUGE_B
-const GAUGE_B        = -1452;
-const GAUGE_MIN      = 0.0;      // visual range for tide-bar
-const GAUGE_MAX      = 8.0;
-const REFRESH_MS     = 10 * 60 * 1000;  // auto-refresh every 10 min
-const STORAGE_KEY    = ‘bangor_v4’;
-const TREND_WINDOW_H = 3;        // hours of data used for regression
-
-// ── State ─────────────────────────────────────────────────────────────────
-let allReadings   = [];   // [{ts:Date, epa:number, gauge:number, synthetic?:bool}]
-let pngAnchor     = null; // the PNG-derived last value {ts, epa, gauge}
-let activePeriodH = 6;
-let chartInst     = null;
-
-// ── Boot ──────────────────────────────────────────────────────────────────
-document.addEventListener(‘DOMContentLoaded’, async () => {
-setupPeriodButtons();
-document.getElementById(‘refreshBtn’).addEventListener(‘click’, () => doRefresh(true));
-
-// Show cached data instantly while fetching
-const cached = loadCache();
-if (cached) {
-allReadings = cached;
-renderAll();
+// ── Debug panel ────────────────────────────────────────────────────────────
+function dbg(msg) {
+const p = document.getElementById(‘debugPanel’);
+if (!p) return;
+p.style.display = ‘block’;
+const t = new Date().toLocaleTimeString(‘en-IE’, { hour12: false });
+p.textContent += t + ’  ’ + msg + ‘\n’;
+console.log(msg);
 }
 
-await doRefresh(!cached);
-setInterval(() => doRefresh(false), REFRESH_MS);
+// ── URLs ───────────────────────────────────────────────────────────────────
+var ZIP_URL = ‘https://epawebapp.epa.ie/Hydronet/output/internet/stations/CAS/33008/S/3_months.zip’;
+var PNG_URL = ‘https://epawebapp.epa.ie/hydronet/output/internet/stations/CAS/33008/S/extralarge_3m_extralarge.png’;
+
+// CORS proxies — tried in order for both ZIP and PNG.
+// Deploy cloudflare-worker.js (free) and add your worker URL as first entry:
+//   function(url){ return ‘https://YOUR-WORKER.workers.dev?target=’ + encodeURIComponent(url); },
+var CORS_PROXIES = [
+function(url){ return ‘https://api.allorigins.win/raw?url=’ + encodeURIComponent(url); },
+function(url){ return ‘https://corsproxy.io/?’ + encodeURIComponent(url); },
+function(url){ return ‘https://api.codetabs.com/v1/proxy?quest=’ + encodeURIComponent(url); },
+];
+
+// ── Constants ──────────────────────────────────────────────────────────────
+var GAUGE_A        = 14.664;
+var GAUGE_B        = -1452;
+var GAUGE_MIN      = 0.0;
+var GAUGE_MAX      = 8.0;
+var REFRESH_MS     = 10 * 60 * 1000;
+var STORAGE_KEY    = ‘bangor_v4’;
+var TREND_WINDOW_H = 3;
+
+// ── State ──────────────────────────────────────────────────────────────────
+var allReadings   = [];
+var pngAnchor     = null;
+var activePeriodH = 6;
+var chartInst     = null;
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+document.addEventListener(‘DOMContentLoaded’, function() {
+dbg(‘Page loaded. Starting up…’);
+setupPeriodButtons();
+document.getElementById(‘refreshBtn’).addEventListener(‘click’, function() { doRefresh(true); });
+
+var cached = loadCache();
+if (cached) {
+dbg(‘Cache found: ’ + cached.length + ’ readings’);
+allReadings = cached;
+renderAll();
+} else {
+dbg(‘No cache found’);
+}
+
+doRefresh(!cached);
+scheduleNextRefresh();
 });
 
-// ── Conversion ────────────────────────────────────────────────────────────
-const toGauge = epa => GAUGE_A * epa + GAUGE_B;
+function scheduleNextRefresh() {
+var msIn15      = 15 * 60 * 1000;
+var elapsed     = Date.now() % msIn15;
+var msUntilNext = (msIn15 - elapsed) + 75000; // 75s after next 15-min boundary
+dbg(‘Next auto-refresh in ’ + Math.round(msUntilNext / 60000) + ’ min’);
+setTimeout(function() {
+doRefresh(false);
+scheduleNextRefresh();
+}, msUntilNext);
+}
 
-// ── LocalStorage cache ────────────────────────────────────────────────────
+// ── Conversion ─────────────────────────────────────────────────────────────
+function toGauge(epa) { return GAUGE_A * epa + GAUGE_B; }
+
+// ── Cache ──────────────────────────────────────────────────────────────────
 function loadCache() {
 try {
-const raw = localStorage.getItem(STORAGE_KEY);
+var raw = localStorage.getItem(STORAGE_KEY);
 if (!raw) return null;
-const { rows } = JSON.parse(raw);
-return rows.map(r => ({ ts: new Date(r.ts), epa: r.epa, gauge: r.gauge, synthetic: r.synthetic }));
-} catch { return null; }
+var parsed = JSON.parse(raw);
+return parsed.rows.map(function(r) {
+return { ts: new Date(r.ts), epa: r.epa, gauge: r.gauge, synthetic: r.synthetic };
+});
+} catch(e) { return null; }
 }
 
 function saveCache(rows) {
-try {
-localStorage.setItem(STORAGE_KEY, JSON.stringify({ savedAt: Date.now(), rows }));
-} catch { /* quota — ignore */ }
+try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ savedAt: Date.now(), rows: rows })); }
+catch(e) { dbg(’Cache save failed (quota?): ’ + e.message); }
 }
 
-// ── Main refresh ──────────────────────────────────────────────────────────
-async function doRefresh(showSpinner = false) {
-const btn = document.getElementById(‘refreshBtn’);
+// ── Main refresh ───────────────────────────────────────────────────────────
+function doRefresh(showSpinner) {
+var btn = document.getElementById(‘refreshBtn’);
 if (showSpinner) btn.classList.add(‘spinning’);
 clearStatus();
+dbg(’— Refresh started —’);
 
-// Run both fetches in parallel
-const [csvResult, pngResult] = await Promise.allSettled([
-fetchAndParseZip(),
-fetchPngLastValue(),
-]);
+var csvPromise = fetchAndParseZip();
+var pngPromise = fetchPngLastValue();
 
-let csvRows = null;
-if (csvResult.status === ‘fulfilled’ && csvResult.value?.length > 0) {
-csvRows = csvResult.value;
+Promise.allSettled([csvPromise, pngPromise]).then(function(results) {
+var csvResult = results[0];
+var pngResult = results[1];
+
+```
+// CSV result
+var csvRows = null;
+if (csvResult.status === 'fulfilled' && csvResult.value && csvResult.value.length > 0) {
+  csvRows = csvResult.value;
+  dbg('CSV OK: ' + csvRows.length + ' rows, last=' + fmtDateTime(csvRows[csvRows.length-1].ts));
 } else {
-const msg = csvResult.reason?.message || ‘unknown error’;
-console.warn(‘CSV fetch failed:’, msg);
-showStatus(`CSV unavailable (${msg}) — using cache`, ‘warn’);
-csvRows = allReadings.filter(r => !r.synthetic); // strip old synthetic points from cache
+  var csvErr = csvResult.reason ? csvResult.reason.message : 'unknown';
+  dbg('CSV FAILED: ' + csvErr);
+  showStatus('CSV unavailable: ' + csvErr, 'warn');
+  csvRows = allReadings.filter(function(r) { return !r.synthetic; });
+  if (csvRows.length > 0) dbg('Using ' + csvRows.length + ' cached CSV rows');
 }
 
-if (pngResult.status === ‘fulfilled’ && pngResult.value) {
-pngAnchor = pngResult.value;
-console.log(`PNG anchor: ${pngAnchor.epa.toFixed(3)} m at ${fmtDateTime(pngAnchor.ts)}`);
+// PNG result
+if (pngResult.status === 'fulfilled' && pngResult.value) {
+  pngAnchor = pngResult.value;
+  dbg('PNG OK: ' + pngAnchor.epa.toFixed(3) + ' m at ' + fmtDateTime(pngAnchor.ts));
 } else {
-console.warn(‘PNG fetch failed:’, pngResult.reason?.message);
-// Keep old pngAnchor if we have one
+  var pngErr = pngResult.reason ? pngResult.reason.message : 'unknown';
+  dbg('PNG FAILED: ' + pngErr);
 }
 
-// Merge: CSV rows + PNG anchor if it’s newer than last CSV row
+// Merge
 if (csvRows && csvRows.length > 0) {
-const merged = […csvRows];
-if (pngAnchor) {
-const lastCsvTs = csvRows[csvRows.length - 1].ts.getTime();
-if (pngAnchor.ts.getTime() > lastCsvTs) {
-merged.push({ …pngAnchor, synthetic: true });
-console.log(`PNG anchor appended — ${Math.round((pngAnchor.ts.getTime() - lastCsvTs) / 60000)} min newer than last CSV row`);
-} else {
-console.log(`PNG anchor not newer than CSV tail — not appended`);
-}
-}
-allReadings = merged;
-saveCache(merged);
+  var merged = csvRows.slice();
+  if (pngAnchor) {
+    var lastCsvTs = csvRows[csvRows.length - 1].ts.getTime();
+    if (pngAnchor.ts.getTime() > lastCsvTs) {
+      merged.push({ ts: pngAnchor.ts, epa: pngAnchor.epa, gauge: pngAnchor.gauge, synthetic: true });
+      var diffMin = Math.round((pngAnchor.ts.getTime() - lastCsvTs) / 60000);
+      dbg('PNG appended as anchor (' + diffMin + ' min newer than CSV tail)');
+    } else {
+      dbg('PNG not newer than CSV tail — not appended');
+    }
+  }
+  allReadings = merged;
+  saveCache(merged);
 }
 
 if (allReadings.length === 0) {
-showStatus(‘⚠ No data available. Check connection.’);
-btn.classList.remove(‘spinning’);
-return;
+  showStatus('No data available. Check connection.', 'error');
+  btn.classList.remove('spinning');
+  return;
 }
 
 clearStatus();
 renderAll();
-// Show the PNG as the overview image (direct img src — fine for display even without CORS)
 showPngImage();
-btn.classList.remove(‘spinning’);
-}
-
-// ── SOURCE 1: Fetch ZIP → CSV ─────────────────────────────────────────────
-async function fetchAndParseZip() {
-const blob = await fetchWithProxies(ZIP_URL);
-if (!blob) throw new Error(‘All proxies failed for ZIP’);
-
-const zip = await JSZip.loadAsync(blob);
-const csvName = Object.keys(zip.files).find(f =>
-/.(csv|txt|dat)$/i.test(f)
-);
-if (!csvName) throw new Error(‘No CSV inside ZIP’);
-
-const text = await zip.files[csvName].async(‘string’);
-console.log(`CSV "${csvName}" — first 400 chars:`, text.slice(0, 400));
-return parseCSV(text, csvName);
-}
-
-/**
-
-- Parse WISKI/Kisters HydroNet CSV.
-- Auto-detects delimiter (;  ,  tab) and date format (European or ISO).
-- Skips comment/header lines (start with #  /  *  or text columns).
-  */
-  function parseCSV(text, filename) {
-  const lines     = text.split(/\r?\n/);
-  const dataLines = [];
-  let headerDone  = false;
-
-for (const line of lines) {
-const t = line.trim();
-if (!t) continue;
-
+btn.classList.remove('spinning');
 ```
+
+});
+}
+
+// ── SOURCE 1: ZIP / CSV ────────────────────────────────────────────────────
+function fetchAndParseZip() {
+dbg(‘Fetching ZIP…’);
+return fetchWithProxies(ZIP_URL).then(function(blob) {
+if (!blob) throw new Error(‘All proxies failed for ZIP’);
+dbg(‘ZIP blob received: ’ + blob.size + ’ bytes — unzipping…’);
+return JSZip.loadAsync(blob);
+}).then(function(zip) {
+var names = Object.keys(zip.files);
+dbg(‘ZIP contents: ’ + names.join(’, ’));
+var csvName = names.find(function(f) { return /.(csv|txt|dat)$/i.test(f); });
+if (!csvName) throw new Error(‘No CSV found in ZIP. Files: ’ + names.join(’, ’));
+dbg(’Reading CSV: ’ + csvName);
+return zip.files[csvName].async(‘string’);
+}).then(function(text) {
+dbg(‘CSV text length: ’ + text.length + ’ chars’);
+dbg(’CSV first 200 chars: ’ + text.slice(0, 200).replace(/\n/g, ‘↵’));
+return parseCSV(text);
+});
+}
+
+function parseCSV(text) {
+var lines     = text.split(/\r?\n/);
+var dataLines = [];
+var headerDone = false;
+
+for (var i = 0; i < lines.length; i++) {
+var t = lines[i].trim();
+if (!t) continue;
 if (!headerDone) {
-  // Skip comment/header lines
-  if (/^[#/*"]/.test(t) ||
-      /^(date|time|timestamp|value|level|stage)/i.test(t)) continue;
-  // First line that starts with a digit is data
-  if (/^\d/.test(t)) headerDone = true;
-  else continue;
+if (/^[#/*”]/.test(t) || /^(date|time|timestamp|value|level|stage)/i.test(t)) continue;
+if (/^\d/.test(t)) headerDone = true;
+else continue;
 }
 dataLines.push(t);
-```
-
 }
 
-if (dataLines.length === 0)
-throw new Error(`No data rows found in ${filename}`);
+dbg(’CSV data lines: ’ + dataLines.length + (dataLines[0] ? ’ first: ’ + dataLines[0] : ‘’));
 
-// Detect delimiter from first data line
-const sample = dataLines[0];
-const delim  = sample.includes(’;’) ? ‘;’
-: sample.includes(’\t’) ? ‘\t’
-: ‘,’;
+if (dataLines.length === 0) throw new Error(‘No data rows in CSV’);
 
-const rows = [];
-for (const line of dataLines) {
+var sample = dataLines[0];
+var delim  = sample.indexOf(’;’) >= 0 ? ‘;’ : sample.indexOf(’\t’) >= 0 ? ‘\t’ : ‘,’;
+dbg(’CSV delimiter: ’ + (delim === ‘;’ ? ‘semicolon’ : delim === ‘\t’ ? ‘tab’ : ‘comma’));
+
+var rows = [];
+for (var j = 0; j < dataLines.length; j++) {
+var line  = dataLines[j];
 if (!line) continue;
-const parts = line.split(delim).map(p => p.trim().replace(/^”|”$/g, ‘’));
+var parts = line.split(delim).map(function(p) { return p.trim().replace(/^”|”$/g, ‘’); });
 if (parts.length < 2) continue;
-
-```
-const ts  = parseTimestamp(parts[0]);
-const val = parseFloat(parts[1].replace(',', '.'));
-if (!ts || isNaN(val)) continue;
-
-// Sanity range for this river gauge (EPA absolute levels)
-if (val < 95 || val > 110) continue;
-
-// Skip bad-quality rows (WISKI quality codes)
+var ts  = parseTimestamp(parts[0]);
+var val = parseFloat(parts[1].replace(’,’, ‘.’));
+if (!ts || isNaN(val) || val < 95 || val > 110) continue;
 if (parts[2]) {
-  const q = parts[2].trim().toLowerCase();
-  if (q === 'bad' || q === '10' || q === '20' || q === 'missing') continue;
+var q = parts[2].trim().toLowerCase();
+if (q === ‘bad’ || q === ‘10’ || q === ‘20’ || q === ‘missing’) continue;
+}
+rows.push({ ts: ts, epa: val, gauge: toGauge(val) });
 }
 
-rows.push({ ts, epa: val, gauge: toGauge(val) });
-```
-
-}
-
-rows.sort((a, b) => a.ts - b.ts);
-if (rows.length === 0) throw new Error(‘CSV parsed but all rows failed validation’);
-
-console.log(`Parsed ${rows.length} CSV rows: ${fmtDateTime(rows[0].ts)} → ${fmtDateTime(rows[rows.length-1].ts)}`);
+rows.sort(function(a, b) { return a.ts - b.ts; });
+if (rows.length === 0) throw new Error(‘CSV parsed but 0 valid rows (check value range 95-110)’);
+dbg(‘CSV parsed OK: ’ + rows.length + ’ rows’);
 return rows;
 }
 
 function parseTimestamp(str) {
 if (!str) return null;
 str = str.trim();
-
-// ISO: 2026-06-24 16:45:00 or 2026-06-24T16:45
-let m = str.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+var m;
+// ISO: 2026-06-24 16:45 or 2026-06-24T16:45
+m = str.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
 if (m) return new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5]);
-
 // European: 24.06.2026 16:45  or  24.06.26 16:45  or  24/06/2026 16:45
 m = str.match(/^(\d{2})[./](\d{2})[./](\d{2,4})\s+(\d{2}):(\d{2})/);
 if (m) {
-const yr = m[3].length === 2 ? 2000 + +m[3] : +m[3];
+var yr = m[3].length === 2 ? 2000 + +m[3] : +m[3];
 return new Date(yr, +m[2]-1, +m[1], +m[4], +m[5]);
 }
-
 return null;
 }
 
-// ── SOURCE 2: PNG footer OCR ──────────────────────────────────────────────
-/**
-
-- Fetches the EPA PNG as a binary blob and scans the raw bytes for the
-- footer text pattern:
-- “Last value at DD.MM.YY HH:MM  XX.XXX m (TBM)”
-- 
-- The Kisters rendering engine writes this as rasterised text, BUT the
-- string also appears literally in the PNG’s tEXt/iTXt metadata chunks
-- and sometimes in the raw deflate stream — so a simple TextDecoder scan
-- of the raw bytes reliably finds it without any image processing.
-- 
-- Returns {ts:Date, epa:number, gauge:number} or null.
-  */
-  async function fetchPngLastValue() {
-  const blob = await fetchWithProxies(PNG_URL);
-  if (!blob) throw new Error(‘All proxies failed for PNG’);
-
-const buf   = await blob.arrayBuffer();
-// Decode as latin-1 so every byte maps 1:1 to a character (no UTF-8 issues)
-const text  = new TextDecoder(‘latin1’).decode(new Uint8Array(buf));
-
-// Primary pattern: “Last value at 24.06.26 16:45  99.008 m”
-// Also handles 4-digit year and variable whitespace
-const re = /Last\s+value\s+at\s+(\d{2}).(\d{2}).(\d{2,4})\s+(\d{2}):(\d{2})\s+([\d.]+)\s*m/i;
-const match = text.match(re);
-
+// ── SOURCE 2: PNG footer OCR ───────────────────────────────────────────────
+function fetchPngLastValue() {
+dbg(‘Fetching PNG for footer OCR…’);
+return fetchWithProxies(PNG_URL).then(function(blob) {
+if (!blob) throw new Error(‘All proxies failed for PNG’);
+dbg(‘PNG blob: ’ + blob.size + ’ bytes — scanning bytes…’);
+return blob.arrayBuffer();
+}).then(function(buf) {
+var bytes = new Uint8Array(buf);
+var text  = ‘’;
+for (var i = 0; i < bytes.length; i++) {
+text += String.fromCharCode(bytes[i]);
+}
+// Search for: “Last value at 24.06.26 16:45  99.008 m”
+var re    = /Last\s+value\s+at\s+(\d{2}).(\d{2}).(\d{2,4})\s+(\d{2}):(\d{2})\s+([\d.]+)\s*m/i;
+var match = text.match(re);
 if (!match) {
-// Log a snippet of what we got near likely footer area for debugging
-const footerHint = text.slice(-2000).replace(/[^\x20-\x7e]/g, ‘·’);
-console.warn(‘PNG footer pattern not found. Last 500 printable chars:’, footerHint.slice(-500));
+// Log last 300 printable chars for debugging
+var printable = text.slice(-1000).replace(/[^\x20-\x7e]/g, ‘’).slice(-300);
+dbg(’PNG footer not found. Last printable: ’ + printable);
 throw new Error(‘PNG footer text not found in raw bytes’);
 }
-
-const [, dd, mm, yy, hh, min, levelStr] = match;
-const year  = yy.length === 2 ? 2000 + +yy : +yy;
-const ts    = new Date(year, +mm - 1, +dd, +hh, +min, 0);
-const epa   = parseFloat(levelStr);
-
-if (isNaN(epa) || epa < 95 || epa > 110) throw new Error(`PNG level out of range: ${levelStr}`);
-
-return { ts, epa, gauge: toGauge(epa) };
+var dd  = match[1], mm = match[2], yy = match[3];
+var hh  = match[4], mn = match[5];
+var lvl = match[6];
+var yr  = yy.length === 2 ? 2000 + +yy : +yy;
+var ts  = new Date(yr, +mm - 1, +dd, +hh, +mn, 0);
+var epa = parseFloat(lvl);
+if (isNaN(epa) || epa < 95 || epa > 110) throw new Error(’PNG level out of range: ’ + lvl);
+dbg(’PNG footer found: ’ + epa.toFixed(3) + ’ m at ’ + fmtDateTime(ts));
+return { ts: ts, epa: epa, gauge: toGauge(epa) };
+});
 }
 
-// ── Proxy fetch ───────────────────────────────────────────────────────────
-async function fetchWithProxies(url) {
-for (const makeProxy of CORS_PROXIES) {
-try {
-const res = await fetch(makeProxy(url), { cache: ‘no-store’ });
-if (!res.ok) { console.warn(‘Proxy returned’, res.status, makeProxy(url)); continue; }
-const blob = await res.blob();
-if (blob.size > 200) return blob;
-} catch (e) {
-console.warn(‘Proxy error:’, e.message);
+// ── Proxy fetch ────────────────────────────────────────────────────────────
+function fetchWithProxies(url) {
+var proxies = CORS_PROXIES.slice();
+function tryNext() {
+if (proxies.length === 0) return Promise.resolve(null);
+var makeProxy = proxies.shift();
+var proxyUrl  = makeProxy(url);
+dbg(’Trying proxy: ’ + proxyUrl.slice(0, 90));
+return fetch(proxyUrl, { cache: ‘no-store’ })
+.then(function(res) {
+dbg(’Response: HTTP ’ + res.status);
+if (!res.ok) { dbg(‘Not OK — trying next proxy’); return tryNext(); }
+return res.blob().then(function(blob) {
+dbg(‘Blob size: ’ + blob.size + ’ bytes’);
+if (blob.size < 200) { dbg(‘Too small — trying next proxy’); return tryNext(); }
+return blob;
+});
+})
+.catch(function(e) {
+dbg(‘Proxy error: ’ + e.message + ’ — trying next’);
+return tryNext();
+});
 }
-}
-return null;
+return tryNext();
 }
 
-// ── Interpolate / extrapolate to NOW ─────────────────────────────────────
-/**
+// ── Interpolate to NOW ─────────────────────────────────────────────────────
+function interpolateNow() {
+if (allReadings.length === 0) return null;
+var now  = Date.now();
+var last = allReadings[allReadings.length - 1];
 
-- Returns the best estimate of the current river level.
-- 
-- Case 1 — “now” falls between two readings: linear interpolation.
-- Case 2 — “now” is after the last reading (the PNG anchor):
-- ```
-        extrapolate using the trend slope from the last 3h.
-  ```
-- 
-- The PNG anchor is the last point in allReadings (if appended).
-- This means the extrapolation always starts from the most recent
-- known value, not from a stale CSV tail.
-  */
-  function interpolateNow() {
-  if (allReadings.length === 0) return null;
-  const now  = Date.now();
-  const last = allReadings[allReadings.length - 1];
-
-// Case 1: “now” falls between two existing readings — linear interpolation
-for (let i = allReadings.length - 1; i >= 1; i–) {
-const a = allReadings[i - 1];
-const b = allReadings[i];
+// Between two readings — linear interpolation
+for (var i = allReadings.length - 1; i >= 1; i–) {
+var a = allReadings[i - 1];
+var b = allReadings[i];
 if (now >= a.ts.getTime() && now <= b.ts.getTime()) {
-const frac = (now - a.ts.getTime()) / (b.ts.getTime() - a.ts.getTime());
-const epa  = a.epa + frac * (b.epa - a.epa);
-return { ts: new Date(now), epa, gauge: toGauge(epa), extrapolated: false };
+var frac = (now - a.ts.getTime()) / (b.ts.getTime() - a.ts.getTime());
+var epa  = a.epa + frac * (b.epa - a.epa);
+return { ts: new Date(now), epa: epa, gauge: toGauge(epa), extrapolated: false };
 }
 }
 
-// Case 2: “now” is beyond the last reading (expected — PNG may be 15-30 min old)
-// Extrapolate: start from the last known value (PNG anchor if present) and
-// apply the trend SLOPE as a delta. Do NOT use the regression line’s y-value
-// directly — that would introduce an offset error when CSV is old.
-const gapH  = (now - last.ts.getTime()) / 3600000;
-const trend = computeTrend();
+// Beyond last reading — extrapolate from PNG anchor using trend slope
+var gapH  = (now - last.ts.getTime()) / 3600000;
+var trend = computeTrend();
 if (trend) {
-// Anchor to last.epa, apply slope * gap
-const epa = last.epa + trend.slope * gapH;
-return {
-ts: new Date(now),
-epa: Math.max(epa, 95.0),
-gauge: toGauge(Math.max(epa, 95.0)),
-extrapolated: true,
-gapH,
-};
+var epaExt = last.epa + trend.slope * gapH;
+epaExt = Math.max(epaExt, 95.0);
+return { ts: new Date(now), epa: epaExt, gauge: toGauge(epaExt), extrapolated: true, gapH: gapH };
+}
+return { ts: new Date(now), epa: last.epa, gauge: last.gauge, extrapolated: true, gapH: gapH };
 }
 
-// No trend — return last reading as-is with a staleness flag
-return { …last, ts: new Date(now), extrapolated: true, gapH };
-}
+// ── Trend regression ───────────────────────────────────────────────────────
+function computeTrend() {
+var csvOnly = allReadings.filter(function(r) { return !r.synthetic; });
+if (csvOnly.length < 3) return null;
 
-// ── Linear regression (trend slope) ──────────────────────────────────────
-/**
-
-- Computes rate of change (slope in EPA m/hr) from recent readings.
-- 
-- Strategy:
-- 1. Try readings within the last TREND_WINDOW_H hours (ideal case).
-- 1. If fewer than 3 points in that window (e.g. CSV is very old),
-- ```
-   fall back to the last 12 CSV readings (non-synthetic) regardless
-  ```
-- ```
-   of their age — this gives the most recent observed trend shape.
-  ```
-- 
-- The PNG synthetic point is EXCLUDED from slope fitting because:
-- - It’s a single isolated point and would skew the line.
-- - Its value is instead used as the anchor in interpolateNow().
-- 
-- Returns { slope, r2, n } or null.
-  */
-  function computeTrend(windowH = TREND_WINDOW_H) {
-  const now    = Date.now();
-  const cutoff = now - windowH * 3600 * 1000;
-
-// Only use real CSV readings (not the synthetic PNG point) for slope
-const csvReadings = allReadings.filter(r => !r.synthetic);
-if (csvReadings.length < 3) return null;
-
-// Try window first; fall back to last 12 CSV rows
-let pts = csvReadings.filter(r => r.ts.getTime() > cutoff);
+var cutoff = Date.now() - TREND_WINDOW_H * 3600 * 1000;
+var pts    = csvOnly.filter(function(r) { return r.ts.getTime() > cutoff; });
 if (pts.length < 3) {
-pts = csvReadings.slice(-12);  // last 12 readings = 3h at 15-min intervals
-console.log(`Trend: window empty, using last ${pts.length} CSV rows`);
+pts = csvOnly.slice(-12);
+dbg(‘Trend: fell back to last ’ + pts.length + ’ CSV rows’);
 }
 
-const x0  = pts[0].ts.getTime();
-const xs  = pts.map(r => (r.ts.getTime() - x0) / 3600000);
-const ys  = pts.map(r => r.epa);
-const n   = xs.length;
-const sX  = xs.reduce((a, b) => a + b, 0);
-const sY  = ys.reduce((a, b) => a + b, 0);
-const sXY = xs.reduce((a, x, i) => a + x * ys[i], 0);
-const sX2 = xs.reduce((a, x) => a + x * x, 0);
-const den = n * sX2 - sX * sX;
+var x0  = pts[0].ts.getTime();
+var xs  = pts.map(function(r) { return (r.ts.getTime() - x0) / 3600000; });
+var ys  = pts.map(function(r) { return r.epa; });
+var n   = xs.length;
+var sX  = xs.reduce(function(a,b){return a+b;}, 0);
+var sY  = ys.reduce(function(a,b){return a+b;}, 0);
+var sXY = xs.reduce(function(a,x,i){return a+x*ys[i];}, 0);
+var sX2 = xs.reduce(function(a,x){return a+x*x;}, 0);
+var den = n * sX2 - sX * sX;
 if (Math.abs(den) < 1e-9) return null;
 
-const slope     = (n * sXY - sX * sY) / den;   // EPA m / hr
-const intercept = (sY - slope * sX) / n;
-const yMean     = sY / n;
-const ssTot     = ys.reduce((a, y) => a + (y - yMean) ** 2, 0);
-const ssRes     = xs.reduce((a, x, i) => a + (ys[i] - (slope * x + intercept)) ** 2, 0);
-const r2        = ssTot < 1e-12 ? 1 : 1 - ssRes / ssTot;
+var slope     = (n * sXY - sX * sY) / den;
+var intercept = (sY - slope * sX) / n;
+var yMean     = sY / n;
+var ssTot = ys.reduce(function(a,y){return a+(y-yMean)*(y-yMean);}, 0);
+var ssRes = xs.reduce(function(a,x,i){return a+Math.pow(ys[i]-(slope*x+intercept),2);}, 0);
+var r2    = ssTot < 1e-12 ? 1 : 1 - ssRes / ssTot;
 
-return { slope, intercept, r2, x0, pts, n };
+return { slope: slope, r2: r2, n: n };
 }
 
-// ── Project forecast from NOW ─────────────────────────────────────────────
-/**
-
-- Projects level at now + hoursAhead.
-- Anchors to the last known reading (PNG if available) + slope * total hours.
-  */
-  function projectForecast(hoursAhead) {
-  const trend = computeTrend();
-  if (!trend || allReadings.length === 0) return null;
-
-const last    = allReadings[allReadings.length - 1];
-const gapH    = (Date.now() - last.ts.getTime()) / 3600000;
-const epa     = last.epa + trend.slope * (gapH + hoursAhead);
+function projectForecast(hoursAhead) {
+var trend = computeTrend();
+if (!trend || allReadings.length === 0) return null;
+var last  = allReadings[allReadings.length - 1];
+var gapH  = (Date.now() - last.ts.getTime()) / 3600000;
+var epa   = last.epa + trend.slope * (gapH + hoursAhead);
 return { epa: Math.max(epa, 95.0), gauge: toGauge(Math.max(epa, 95.0)) };
 }
 
-// ── Render all UI ─────────────────────────────────────────────────────────
+// ── Render ─────────────────────────────────────────────────────────────────
 function renderAll() {
-const current = interpolateNow();
+var current = interpolateNow();
 if (current) renderGaugeCard(current);
 renderForecastCard();
 renderGraph();
 }
 
-// ── Gauge card ────────────────────────────────────────────────────────────
 function renderGaugeCard(current) {
-// Big number
 document.getElementById(‘currentGauge’).textContent    = current.gauge.toFixed(2);
-document.getElementById(‘epaLevelDisplay’).textContent = `EPA: ${current.epa.toFixed(3)} m (TBM)${current.extrapolated ? ' (est.)' : ''}`;
+document.getElementById(‘epaLevelDisplay’).textContent =
+‘EPA: ’ + current.epa.toFixed(3) + ’ m (TBM)’ + (current.extrapolated ? ’ (est.)’ : ‘’);
 
-// Tide bar
-const pct = Math.min(Math.max((current.gauge - GAUGE_MIN) / (GAUGE_MAX - GAUGE_MIN), 0), 1);
-document.getElementById(‘tideFill’).style.height = `${pct * 100}%`;
+var pct = Math.min(Math.max((current.gauge - GAUGE_MIN) / (GAUGE_MAX - GAUGE_MIN), 0), 1);
+document.getElementById(‘tideFill’).style.height = (pct * 100) + ‘%’;
 
-// Trend arrow + rate in cm/hr
-const trend    = computeTrend();
-const trendRow = document.getElementById(‘trendRow’);
+var trend    = computeTrend();
+var trendRow = document.getElementById(‘trendRow’);
 trendRow.className = ‘trend-row’;
 
-if (trend && Math.abs(trend.slope) > 0.001) {   // >0.1 cm/hr EPA = meaningful
-const rising = trend.slope > 0;
+if (trend && Math.abs(trend.slope) > 0.001) {
+var rising = trend.slope > 0;
 trendRow.classList.add(rising ? ‘rising’ : ‘falling’);
 document.getElementById(‘trendIcon’).textContent  = rising ? ‘↑’ : ‘↓’;
 document.getElementById(‘trendLabel’).textContent = rising ? ‘Rising’ : ‘Falling’;
-
-```
-// Rate in cm/hr (gauge units: multiply EPA slope by GAUGE_A × 100 for cm)
-const cmPerHr = trend.slope * GAUGE_A * 100;   // cm/hr in gauge units
-document.getElementById('trendRate').textContent =
-  `${cmPerHr > 0 ? '+' : ''}${cmPerHr.toFixed(1)} cm/hr`;
-```
-
+var cmPerHr = trend.slope * GAUGE_A * 100;
+document.getElementById(‘trendRate’).textContent  =
+(cmPerHr > 0 ? ‘+’ : ‘’) + cmPerHr.toFixed(1) + ’ cm/hr’;
 } else {
 trendRow.classList.add(‘steady’);
 document.getElementById(‘trendIcon’).textContent  = ‘—’;
@@ -488,120 +418,200 @@ document.getElementById(‘trendLabel’).textContent = ‘Steady’;
 document.getElementById(‘trendRate’).textContent  = ‘’;
 }
 
-// Last known reading time + age
-const last   = allReadings[allReadings.length - 1];
-const ageMin = Math.round((Date.now() - last.ts.getTime()) / 60000);
-const source = last.synthetic ? ‘PNG’ : ‘CSV’;
-document.getElementById(‘readingTime’).textContent = `${fmtTime(last.ts)} (${source})`;
+var last   = allReadings[allReadings.length - 1];
+var ageMin = Math.round((Date.now() - last.ts.getTime()) / 60000);
+var src    = last.synthetic ? ‘PNG’ : ‘CSV’;
+document.getElementById(‘readingTime’).textContent = fmtTime(last.ts) + ’ (’ + src + ‘)’;
+var ageEl = document.getElementById(‘dataAge’);
+if (ageMin < 30)       { ageEl.textContent = ageMin + ‘m ago’;                    ageEl.className = ‘age-ok’; }
+else if (ageMin < 120) { ageEl.textContent = ageMin + ‘m ago’;                    ageEl.className = ‘age-warn’; }
+else                   { ageEl.textContent = (ageMin/60).toFixed(1) + ‘h ago ⚠’; ageEl.className = ‘age-old’; }
 
-const ageEl = document.getElementById(‘dataAge’);
-if (ageMin < 30) {
-ageEl.textContent = `${ageMin}m ago`; ageEl.className = ‘age-ok’;
-} else if (ageMin < 120) {
-ageEl.textContent = `${ageMin}m ago`; ageEl.className = ‘age-warn’;
-} else {
-const ageH = (ageMin / 60).toFixed(1);
-ageEl.textContent = `${ageH}h ago ⚠`; ageEl.className = ‘age-old’;
-}
-
-// If extrapolating a significant gap, show a note
 if (current.extrapolated && current.gapH > 0.5) {
-showStatus(
-`Estimated from ${(current.gapH * 60).toFixed(0)} min old reading — extrapolating at trend rate`,
-‘warn’
-);
-} else {
-clearStatus();
+showStatus(‘Estimated — extrapolating from ’ + Math.round(current.gapH * 60) + ’ min old reading’, ‘warn’);
 }
 }
 
-// ── Forecast card ─────────────────────────────────────────────────────────
 function renderForecastCard() {
-[{ h: 1, gId: ‘f1Gauge’, eId: ‘f1EPA’ },
-{ h: 3, gId: ‘f3Gauge’, eId: ‘f3EPA’ },
-{ h: 6, gId: ‘f6Gauge’, eId: ‘f6EPA’ }]
-.forEach(({ h, gId, eId }) => {
-const fc = projectForecast(h);
-document.getElementById(gId).textContent = fc ? fc.gauge.toFixed(2) : ‘–.-’;
-document.getElementById(eId).textContent = fc ? fc.epa.toFixed(3)   : ‘–.—’;
+var slots = [{h:1,g:‘f1Gauge’,e:‘f1EPA’},{h:3,g:‘f3Gauge’,e:‘f3EPA’},{h:6,g:‘f6Gauge’,e:‘f6EPA’}];
+slots.forEach(function(s) {
+var fc = projectForecast(s.h);
+document.getElementById(s.g).textContent = fc ? fc.gauge.toFixed(2) : ‘–.-’;
+document.getElementById(s.e).textContent = fc ? fc.epa.toFixed(3)   : ‘–.—’;
 });
-
-const trend = computeTrend();
+var trend = computeTrend();
 if (trend) {
-const dir      = Math.abs(trend.slope) < 0.001 ? ‘steady’
-: trend.slope > 0 ? ‘rising’ : ‘falling’;
-const cmPerHr  = (trend.slope * GAUGE_A * 100).toFixed(1);
-const r2pct    = Math.round(trend.r2 * 100);
-const pngNote  = pngAnchor ? ` · anchored to PNG ${fmtTime(pngAnchor.ts)}` : ‘’;
+var dir      = Math.abs(trend.slope) < 0.001 ? ‘steady’ : trend.slope > 0 ? ‘rising’ : ‘falling’;
+var cmPerHr  = Math.abs(trend.slope * GAUGE_A * 100).toFixed(1);
+var r2pct    = Math.round(trend.r2 * 100);
+var pngNote  = pngAnchor ? ’ · PNG ’ + fmtTime(pngAnchor.ts) : ‘’;
 document.getElementById(‘forecastNote’).textContent =
-`${dir} ${Math.abs(cmPerHr)} cm/hr · R²=${r2pct}% · ${trend.n} pts${pngNote}`;
+dir + ’ ’ + cmPerHr + ’ cm/hr · R²=’ + r2pct + ‘% · ’ + trend.n + ’ pts’ + pngNote;
 } else {
-document.getElementById(‘forecastNote’).textContent =
-‘Insufficient data for forecast (need 3+ readings in last 3h)’;
+document.getElementById(‘forecastNote’).textContent = ‘Insufficient data for forecast’;
 }
 }
 
-// ── Chart ─────────────────────────────────────────────────────────────────
+// ── Chart ──────────────────────────────────────────────────────────────────
 function renderGraph() {
-const data = buildChartData(activePeriodH);
+var data = buildChartData(activePeriodH);
 if (!chartInst) {
-chartInst = renderChart(‘levelChart’, data, activePeriodH);
+chartInst = createChart(data, activePeriodH);
 } else {
-updateChart(chartInst, data, activePeriodH);
+chartInst.data.datasets[0].data = buildHistDataset(data.hist, data.nowPoint);
+chartInst.data.datasets[1].data = data.fore;
+chartInst.options.scales.x.min  = xMin(activePeriodH);
+chartInst.options.scales.x.max  = xMax(data.fore);
+chartInst.options.plugins.nowLine.nowTs = data.nowPoint ? data.nowPoint.x.getTime() : Date.now();
+chartInst.update(‘active’);
 }
+}
+
+function buildHistDataset(hist, nowPoint) {
+if (!nowPoint) return hist;
+var last = hist[hist.length - 1];
+if (!last || nowPoint.x > last.x) return hist.concat([nowPoint]);
+return hist;
 }
 
 function buildChartData(periodH) {
-const cutoff = Date.now() - periodH * 3600 * 1000;
+var cutoff = Date.now() - periodH * 3600 * 1000;
+var hist   = allReadings
+.filter(function(r) { return r.ts.getTime() >= cutoff; })
+.map(function(r) { return { x: r.ts, y: +r.gauge.toFixed(3) }; });
 
-// Historical readings within window
-const hist = allReadings
-.filter(r => r.ts.getTime() >= cutoff)
-.map(r => ({ x: r.ts, y: +r.gauge.toFixed(3) }));
+var current  = interpolateNow();
+var nowPoint = current ? { x: new Date(), y: +current.gauge.toFixed(3) } : null;
 
-// Interpolated “now” point — bridges history line to forecast line
-const current  = interpolateNow();
-const nowPoint = current ? { x: new Date(), y: +current.gauge.toFixed(3) } : null;
-
-// Forecast from now → +6h at 15-min steps
-const fore  = [];
-const trend = computeTrend();
+var fore  = [];
+var trend = computeTrend();
 if (trend && nowPoint) {
-fore.push({ x: nowPoint.x, y: nowPoint.y }); // start forecast at now
-for (let m = 15; m <= 360; m += 15) {
-const fc = projectForecast(m / 60);
+fore.push({ x: nowPoint.x, y: nowPoint.y });
+for (var m = 15; m <= 360; m += 15) {
+var fc = projectForecast(m / 60);
 if (fc) fore.push({ x: new Date(Date.now() + m * 60000), y: +fc.gauge.toFixed(3) });
 }
 }
 
-return { hist, nowPoint, fore };
+return { hist: hist, nowPoint: nowPoint, fore: fore };
 }
 
-// ── EPA PNG display ───────────────────────────────────────────────────────
-function showPngImage() {
-const img = document.getElementById(‘epaImage’);
-// img tags can load cross-origin images even without CORS headers (display only)
-img.src = `${PNG_URL}?_=${Date.now()}`;
-img.onerror = () => {
-// Try via proxy as fallback
-img.onerror = null;
-img.src = `${CORS_PROXIES[0](PNG_URL)}&_=${Date.now()}`;
+function xMin(periodH) { return new Date(Date.now() - periodH * 3600 * 1000); }
+function xMax(fore)    {
+if (fore && fore.length > 0) return fore[fore.length - 1].x;
+return new Date(Date.now() + 3600 * 1000);
+}
+
+function createChart(data, periodH) {
+var MONO = “‘IBM Plex Mono’, ‘Courier New’, monospace”;
+var C = {
+water: ‘#2196f3’, waterFill: ‘rgba(33,150,243,0.18)’,
+forecast: ‘#f59e0b’, forecastFill: ‘rgba(245,158,11,0.10)’,
+grid: ‘rgba(30,58,95,0.9)’, tick: ‘#3d5a7a’, label: ‘#7a9cbf’,
+tooltipBg: ‘#0a1628’, tooltipBdr: ‘#1e3a5f’,
 };
 
-// Update meta line
-const last  = allReadings[allReadings.length - 1];
-const parts = [];
-if (pngAnchor) parts.push(`PNG: ${pngAnchor.epa.toFixed(3)} m at ${fmtTime(pngAnchor.ts)}`);
-parts.push(`CSV tail: ${allReadings.filter(r => !r.synthetic).slice(-1)[0]?.epa.toFixed(3)} m`);
-parts.push(`${allReadings.length} total readings`);
+var nowTs    = data.nowPoint ? data.nowPoint.x.getTime() : Date.now();
+var histData = buildHistDataset(data.hist, data.nowPoint);
+
+var nowLinePlugin = {
+id: ‘nowLine’,
+afterDraw: function(chart) {
+var ctx = chart.ctx;
+var ca  = chart.chartArea;
+var x   = chart.scales.x;
+var ts  = chart.options.plugins.nowLine.nowTs || Date.now();
+var nx  = x.getPixelForValue(ts);
+if (nx < x.left || nx > x.right) return;
+ctx.save();
+ctx.beginPath();
+ctx.moveTo(nx, ca.top); ctx.lineTo(nx, ca.bottom);
+ctx.strokeStyle = ‘rgba(255,255,255,0.28)’;
+ctx.lineWidth = 1.5; ctx.setLineDash([5,5]); ctx.stroke(); ctx.setLineDash([]);
+ctx.fillStyle = ‘rgba(255,255,255,0.32)’;
+ctx.font = ’9px ’ + MONO; ctx.textAlign = ‘center’; ctx.textBaseline = ‘top’;
+ctx.fillText(‘NOW’, nx, ca.top + 4);
+ctx.restore();
+}
+};
+
+var ctx = document.getElementById(‘levelChart’).getContext(‘2d’);
+return new Chart(ctx, {
+type: ‘line’,
+data: {
+datasets: [
+{
+label: ‘Gauge (m)’, data: histData,
+borderColor: C.water, backgroundColor: C.waterFill,
+borderWidth: 2, pointRadius: 0, pointHoverRadius: 4,
+fill: true, tension: 0.3, order: 2,
+},
+{
+label: ‘Forecast’, data: data.fore,
+borderColor: C.forecast, backgroundColor: C.forecastFill,
+borderDash: [7,4], borderWidth: 2, pointRadius: 0, pointHoverRadius: 4,
+fill: true, tension: 0.3, order: 1,
+},
+],
+},
+options: {
+responsive: true, maintainAspectRatio: false, animation: { duration: 350 },
+interaction: { mode: ‘index’, intersect: false },
+plugins: {
+legend: { display: false },
+nowLine: { nowTs: nowTs },
+tooltip: {
+backgroundColor: C.tooltipBg, borderColor: C.tooltipBdr, borderWidth: 1,
+titleColor: C.label, bodyColor: ‘#e8f4fd’,
+titleFont: { family: MONO, size: 10 }, bodyFont: { family: MONO, size: 12 }, padding: 10,
+callbacks: {
+title: function(items) { return fmtTooltipTime(new Date(items[0].parsed.x)); },
+label: function(item) {
+return (item.datasetIndex === 1 ? ‘⟢’ : ‘〜’) + ’  ’ + item.parsed.y.toFixed(3) + ’ m gauge’;
+},
+},
+},
+},
+scales: {
+x: {
+type: ‘time’, min: xMin(periodH), max: xMax(data.fore),
+time: { displayFormats: { minute: ‘HH:mm’, hour: ‘HH:mm’, day: ‘dd MMM’ } },
+grid: { color: C.grid }, ticks: { color: C.tick, font: { family: MONO, size: 10 }, maxTicksLimit: 7, maxRotation: 0 },
+border: { color: C.grid },
+},
+y: {
+grid: { color: C.grid }, ticks: { color: C.tick, font: { family: MONO, size: 10 }, callback: function(v){ return v.toFixed(2); } },
+border: { color: C.grid },
+title: { display: true, text: ‘Gauge (m)’, color: C.label, font: { family: MONO, size: 10 } },
+},
+},
+},
+plugins: [nowLinePlugin],
+});
+}
+
+// ── EPA PNG image display ───────────────────────────────────────────────────
+function showPngImage() {
+var img = document.getElementById(‘epaImage’);
+img.src = PNG_URL + ‘?*=’ + Date.now();
+img.onerror = function() {
+img.onerror = null;
+img.src = CORS_PROXIES[0](PNG_URL) + ’&*=’ + Date.now();
+};
+var last = allReadings[allReadings.length - 1];
+var parts = [];
+if (pngAnchor) parts.push(‘PNG: ’ + pngAnchor.epa.toFixed(3) + ’ m @ ’ + fmtTime(pngAnchor.ts));
+var csvTail = allReadings.filter(function(r){return !r.synthetic;}).slice(-1)[0];
+if (csvTail)  parts.push(‘CSV tail: ’ + csvTail.epa.toFixed(3) + ’ m’);
+parts.push(allReadings.length + ’ readings’);
 document.getElementById(‘epaMeta’).textContent = parts.join(’ · ’);
 }
 
-// ── Period buttons ────────────────────────────────────────────────────────
+// ── Period buttons ──────────────────────────────────────────────────────────
 function setupPeriodButtons() {
-document.querySelectorAll(’.period-btn’).forEach(btn => {
-btn.addEventListener(‘click’, () => {
-document.querySelectorAll(’.period-btn’).forEach(b => b.classList.remove(‘active’));
+document.querySelectorAll(’.period-btn’).forEach(function(btn) {
+btn.addEventListener(‘click’, function() {
+document.querySelectorAll(’.period-btn’).forEach(function(b){ b.classList.remove(‘active’); });
 btn.classList.add(‘active’);
 activePeriodH = parseInt(btn.dataset.h);
 renderGraph();
@@ -609,23 +619,21 @@ renderGraph();
 });
 }
 
-// ── Status bar ────────────────────────────────────────────────────────────
-function showStatus(msg, type = ‘error’) {
-const el = document.getElementById(‘statusBar’);
+// ── Status ──────────────────────────────────────────────────────────────────
+function showStatus(msg, type) {
+var el = document.getElementById(‘statusBar’);
 el.textContent = msg;
-el.style.color = type === ‘warn’  ? ‘var(–forecast)’
-: type === ‘info’  ? ‘var(–text-dim)’
-: ‘var(–rising)’;
+el.style.color = type === ‘warn’ ? ‘var(–forecast)’ : type === ‘info’ ? ‘var(–text-dim)’ : ‘var(–rising)’;
 }
 function clearStatus() { document.getElementById(‘statusBar’).textContent = ‘’; }
 
-// ── Formatters ────────────────────────────────────────────────────────────
+// ── Formatters ───────────────────────────────────────────────────────────────
 function fmtTime(d) {
 return d.toLocaleTimeString(‘en-IE’, { hour: ‘2-digit’, minute: ‘2-digit’, hour12: false });
 }
 function fmtDateTime(d) {
-return d.toLocaleString(‘en-IE’, {
-day: ‘2-digit’, month: ‘short’,
-hour: ‘2-digit’, minute: ‘2-digit’, hour12: false,
-});
+return d.toLocaleString(‘en-IE’, { day: ‘2-digit’, month: ‘short’, hour: ‘2-digit’, minute: ‘2-digit’, hour12: false });
+}
+function fmtTooltipTime(d) {
+return d.toLocaleString(‘en-IE’, { weekday: ‘short’, day: ‘numeric’, month: ‘short’, hour: ‘2-digit’, minute: ‘2-digit’, hour12: false });
 }
