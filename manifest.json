@@ -1,0 +1,10 @@
+{
+  "name": "Bangor River Level",
+  "short_name": "Bangor River",
+  "description": "Real-time river level for Bangor fishing — EPA HydroNet data",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0a1628",
+  "theme_color": "#0a1628",
+  "orientation": "portrait-primary"
+}
