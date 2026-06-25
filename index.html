@@ -1,3 +1,5 @@
+Claude V11.1
+
 <!DOCTYPE html>
 
 <html lang="en">
@@ -11,21 +13,6 @@
   <link rel="manifest" href="manifest.json">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-
-  <!-- Chart.js + date adapter -->
-
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-
-  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
-
-  <!-- JSZip for unzipping the CSV in the browser -->
-
-  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-
-  <!-- PapaParse for robust CSV parsing -->
-
-  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -38,37 +25,24 @@
 
 <main class="container">
 
-  <!-- CURRENT LEVEL CARD -->
-
   <section class="card gauge-card">
-    <div class="tide-bar">
-      <div class="tide-fill" id="tideFill"></div>
-    </div>
+    <div class="tide-bar"><div class="tide-fill" id="tideFill"></div></div>
     <div class="gauge-body">
       <div class="level-display">
         <span class="level-number" id="currentGauge">--.-</span>
         <span class="level-unit">m gauge</span>
       </div>
       <div class="epa-level" id="epaLevelDisplay">EPA: --.--- m (TBM)</div>
-
-```
-  <div class="trend-row" id="trendRow">
-    <span class="trend-icon" id="trendIcon">—</span>
-    <span class="trend-label" id="trendLabel">Loading…</span>
-    <span class="trend-rate" id="trendRate"></span>
-  </div>
-
-  <div class="updated-row">
-    Reading: <span id="readingTime">--:--</span>
-    &nbsp;·&nbsp;
-    <span id="dataAge" class="age-ok">--</span>
-  </div>
-</div>
-```
-
+      <div class="trend-row" id="trendRow">
+        <span class="trend-icon" id="trendIcon">—</span>
+        <span class="trend-label" id="trendLabel">Loading…</span>
+        <span class="trend-rate" id="trendRate"></span>
+      </div>
+      <div class="updated-row">
+        Reading: <span id="readingTime">--:--</span>&nbsp;·&nbsp;<span id="dataAge" class="age-ok">--</span>
+      </div>
+    </div>
   </section>
-
-  <!-- FORECAST CARD -->
 
   <section class="card forecast-card">
     <div class="forecast-header">Forecast</div>
@@ -94,8 +68,6 @@
     <div class="forecast-note" id="forecastNote">Based on current trend</div>
   </section>
 
-  <!-- PERIOD SELECTOR -->
-
   <section class="card period-card">
     <div class="period-label">History</div>
     <div class="period-buttons">
@@ -107,26 +79,20 @@
     </div>
   </section>
 
-  <!-- CHART CARD -->
-
   <section class="card chart-card">
-    <div class="chart-wrap">
-      <canvas id="levelChart"></canvas>
-    </div>
+    <div class="chart-wrap"><canvas id="levelChart"></canvas></div>
     <div class="chart-legend">
       <span class="legend-line hist"></span> Gauge level (m)
-      &nbsp;&nbsp;
-      <span class="legend-line fore"></span> Forecast
-      &nbsp;&nbsp;
-      <span class="legend-now"></span> Now
+      &nbsp;&nbsp;<span class="legend-line fore"></span> Forecast
+      &nbsp;&nbsp;<span class="legend-now"></span> Now
     </div>
   </section>
 
-  <!-- STATUS / ERROR -->
-
   <div class="status-bar" id="statusBar"></div>
 
-  <!-- EPA SOURCE IMAGE -->
+  <!-- Debug panel — shows data fetch progress -->
+
+  <section class="card" id="debugPanel" style="padding:12px;font-family:monospace;font-size:10px;color:#7a9cbf;white-space:pre-wrap;word-break:break-all;line-height:1.5;display:none"></section>
 
   <section class="card epa-card">
     <div class="epa-label">EPA Source — 3 Month Overview</div>
@@ -136,7 +102,17 @@
 
 </main>
 
-<script type="module" src="js/app.js"></script>
+<!-- All CDN libraries -->
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+
+<!-- Single bundled app script — no module imports needed -->
+
+<script src="js/app.js"></script>
 
 </body>
 </html>
