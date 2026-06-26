@@ -82,7 +82,7 @@ Claude V11.1
     <div class="gauge-body">
       <div class="level-display">
         <span class="level-number" id="currentGauge">--.-</span>
-        <span class="level-unit">m gauge</span>
+        <span class="level-unit">gauge</span>
       </div>
       <div class="epa-level" id="epaLevelDisplay">EPA: --.--- m (TBM)</div>
       <div class="trend-row steady" id="trendRow">
@@ -147,7 +147,7 @@ Claude V11.1
 // Fallback: direct EPA fetch if data.json is stale
 
 var GAUGE_A = 14.664, GAUGE_B = -1452;
-var GAUGE_MIN = 0, GAUGE_MAX = 8;
+var GAUGE_MIN = 0, GAUGE_MAX = 16;
 var TREND_WINDOW_H = 3;
 var allReadings = [], pngAnchor = null, activePeriodH = 6, chartInst = null;
 
