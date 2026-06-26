@@ -49,7 +49,7 @@ Claude V11.1
 .forecast-note{margin-top:12px;font-size:.72rem;color:var(--text-muted);font-style:italic;text-align:center}
 .period-card{padding:10px 12px;display:flex;align-items:center;gap:10px}
 .period-label{font-size:.72rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);flex-shrink:0}
-.period-buttons{display:flex;gap:6px;flex:1;justify-content:flex-end}
+.period-buttons{display:flex;gap:5px;flex:1;justify-content:flex-end;flex-wrap:wrap}
 .period-btn{background:var(--bg);border:1px solid var(--border);color:var(--text-dim);border-radius:20px;padding:5px 12px;font-family:var(--font-mono);font-size:.8rem;cursor:pointer}
 .period-btn.active{background:var(--water);border-color:var(--water);color:#fff;font-weight:600}
 .chart-card{padding:14px 14px 10px}
@@ -85,6 +85,7 @@ Claude V11.1
         <span class="level-unit">gauge</span>
       </div>
       <div class="epa-level" id="epaLevelDisplay">EPA: --.--- m (TBM)</div>
+      <div class="epa-level" id="pngReadingDisplay" style="color:var(--forecast);margin-top:-4px"></div>
       <div class="trend-row steady" id="trendRow">
         <span class="trend-icon" id="trendIcon">—</span>
         <span class="trend-label" id="trendLabel">Loading…</span>
@@ -114,6 +115,10 @@ Claude V11.1
       <button class="period-btn" data-h="24">24h</button>
       <button class="period-btn" data-h="48">48h</button>
       <button class="period-btn" data-h="72">3d</button>
+      <button class="period-btn" data-h="168">1w</button>
+      <button class="period-btn" data-h="336">2w</button>
+      <button class="period-btn" data-h="720">1m</button>
+      <button class="period-btn" data-h="2160">3m</button>
     </div>
   </section>
 
@@ -251,6 +256,8 @@ function interpolateNow(){
   if(!allReadings.length) return null;
   var now = Date.now();
   var last = allReadings[allReadings.length-1];
+
+  // Case 1: now falls between two readings — interpolate
   for(var i=allReadings.length-1;i>=1;i--){
     var a=allReadings[i-1], b=allReadings[i];
     if(now>=a.ts.getTime()&&now<=b.ts.getTime()){
@@ -259,10 +266,18 @@ function interpolateNow(){
       return {ts:new Date(now),epa:epa,gauge:toGauge(epa),extrapolated:false};
     }
   }
-  var gapH=(now-last.ts.getTime())/3600000;
-  var tr=computeTrend();
-  if(tr){ var epa=Math.max(last.epa+tr.slope*gapH,95); return {ts:new Date(now),epa:epa,gauge:toGauge(epa),extrapolated:true,gapH:gapH}; }
-  return {ts:new Date(now),epa:last.epa,gauge:last.gauge,extrapolated:true,gapH:gapH};
+
+  // Case 2: now is beyond last reading — extrapolate from PNG anchor
+  // Always use pngAnchor as the start point if available (most recent known value)
+  var anchor = pngAnchor || last;
+  var gapH = (now - anchor.ts.getTime()) / 3600000;
+  var tr = computeTrend();
+  if(tr){
+    var epa = Math.max(anchor.epa + tr.slope * gapH, 95);
+    return {ts:new Date(now), epa:epa, gauge:toGauge(epa), extrapolated:true, gapH:gapH};
+  }
+  // No trend — return anchor value with staleness flag
+  return {ts:new Date(now), epa:anchor.epa, gauge:anchor.gauge, extrapolated:true, gapH:gapH};
 }
 
 // ── Trend regression ──────────────────────────────────────────────────────
@@ -291,9 +306,10 @@ function computeTrend(){
 function forecast(h){
   var tr=computeTrend();
   if(!tr||!allReadings.length) return null;
-  var last=allReadings[allReadings.length-1];
-  var gapH=(Date.now()-last.ts.getTime())/3600000;
-  var epa=Math.max(last.epa+tr.slope*(gapH+h),95);
+  // Always anchor to PNG value — the exact last known EPA reading
+  var anchor = pngAnchor || allReadings[allReadings.length-1];
+  var gapH=(Date.now()-anchor.ts.getTime())/3600000;
+  var epa=Math.max(anchor.epa+tr.slope*(gapH+h),95);
   return {epa:epa,gauge:toGauge(epa)};
 }
 
@@ -306,8 +322,28 @@ function renderAll(){
 }
 
 function renderGauge(cur){
-  document.getElementById('currentGauge').textContent = cur.gauge.toFixed(2);
-  document.getElementById('epaLevelDisplay').textContent = 'EPA: '+cur.epa.toFixed(3)+' m (TBM)'+(cur.extrapolated?' (est.)':'');
+  // Big number: PNG anchor gauge (exact last known) or extrapolated if no anchor
+  var displayGauge = pngAnchor ? pngAnchor.gauge : cur.gauge;
+  var displayEpa   = pngAnchor ? pngAnchor.epa   : cur.epa;
+  document.getElementById('currentGauge').textContent = displayGauge.toFixed(2);
+
+  // EPA line: exact PNG footer value + timestamp
+  var pngEl = document.getElementById('pngReadingDisplay');
+  if(pngAnchor){
+    document.getElementById('epaLevelDisplay').textContent =
+      'EPA: '+pngAnchor.epa.toFixed(3)+' m  @  '+fmtFull(pngAnchor.ts);
+    // If there's a meaningful gap, show the extrapolated estimate underneath
+    var pngAgeMin = Math.round((Date.now()-pngAnchor.ts.getTime())/60000);
+    if(pngAgeMin > 5 && cur.extrapolated){
+      pngEl.textContent = 'Est. now: EPA '+cur.epa.toFixed(3)+' m / gauge '+cur.gauge.toFixed(2)+' (+'+pngAgeMin+'m extrap.)';
+    } else {
+      pngEl.textContent = '';
+    }
+  } else {
+    document.getElementById('epaLevelDisplay').textContent =
+      'EPA: '+cur.epa.toFixed(3)+' m (TBM)'+(cur.extrapolated?' (est.)':'');
+    pngEl.textContent = '';
+  }
   var pct=Math.min(Math.max((cur.gauge-GAUGE_MIN)/(GAUGE_MAX-GAUGE_MIN),0),1);
   document.getElementById('tideFill').style.height=(pct*100)+'%';
 
@@ -326,10 +362,10 @@ function renderGauge(cur){
     document.getElementById('trendRate').textContent='';
   }
 
-  var last=allReadings[allReadings.length-1];
-  var age=Math.round((Date.now()-last.ts.getTime())/60000);
-  var src=last.synthetic?'PNG':'CSV';
-  document.getElementById('readingTime').textContent=fmt(last.ts)+' ('+src+')';
+  // Always show PNG anchor as the reference time — it's the most recent EPA reading
+  var refPoint = pngAnchor || allReadings[allReadings.length-1];
+  var age=Math.round((Date.now()-refPoint.ts.getTime())/60000);
+  document.getElementById('readingTime').textContent = fmtFull(refPoint.ts);
   var el=document.getElementById('dataAge');
   if(age<30){el.textContent=age+'m ago';el.className='age-ok';}
   else if(age<120){el.textContent=age+'m ago';el.className='age-warn';}
@@ -402,8 +438,8 @@ function makeChart(data){
   return new Chart(document.getElementById('levelChart').getContext('2d'),{
     type:'line',
     data:{datasets:[
-      {label:'Gauge',data:appendNow(data.hist,data.now),borderColor:CC.w,backgroundColor:CC.wf,borderWidth:2,pointRadius:0,pointHoverRadius:4,fill:true,tension:0.3,order:2},
-      {label:'Forecast',data:data.fore,borderColor:CC.f,backgroundColor:CC.ff,borderDash:[7,4],borderWidth:2,pointRadius:0,pointHoverRadius:4,fill:true,tension:0.3,order:1},
+      {label:'Gauge',data:appendNow(data.hist,data.now),borderColor:CC.w,backgroundColor:CC.wf,borderWidth:2,pointRadius:0,pointHoverRadius:0,pointStyle:false,fill:true,tension:0.3,order:2},
+      {label:'Forecast',data:data.fore,borderColor:CC.f,backgroundColor:CC.ff,borderDash:[7,4],borderWidth:2,pointRadius:0,pointHoverRadius:0,pointStyle:false,fill:true,tension:0.3,order:1},
     ]},
     options:{
       responsive:true,maintainAspectRatio:false,animation:{duration:350},
@@ -444,7 +480,7 @@ function showPng(){
   var last=allReadings[allReadings.length-1];
   var csv=allReadings.filter(function(r){return !r.synthetic;}).slice(-1)[0];
   var parts=[];
-  if(pngAnchor) parts.push('PNG: '+pngAnchor.epa.toFixed(3)+' m @ '+fmt(pngAnchor.ts));
+  if(pngAnchor) parts.push('PNG last value: '+pngAnchor.epa.toFixed(3)+' m TBM @ '+fmtFull(pngAnchor.ts));
   if(csv) parts.push('CSV tail: '+csv.epa.toFixed(3)+' m');
   parts.push(allReadings.length+' readings');
   document.getElementById('epaMeta').textContent=parts.join(' · ');
@@ -471,6 +507,7 @@ function setStatus(msg,type){
 
 // ── Formatters ────────────────────────────────────────────────────────────
 function fmt(d){ return d.toLocaleTimeString('en-IE',{hour:'2-digit',minute:'2-digit',hour12:false}); }
+function fmtFull(d){ return d.toLocaleDateString('en-IE',{day:'2-digit',month:'short'})+' '+d.toLocaleTimeString('en-IE',{hour:'2-digit',minute:'2-digit',hour12:false}); }
 function fmtLong(d){ return d.toLocaleString('en-IE',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit',hour12:false}); }
 </script>
 
