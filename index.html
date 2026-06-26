@@ -322,24 +322,29 @@ function renderAll(){
 }
 
 function renderGauge(cur){
-  // Big number: PNG anchor gauge (exact last known) or extrapolated if no anchor
-  var displayGauge = pngAnchor ? pngAnchor.gauge : cur.gauge;
-  var displayEpa   = pngAnchor ? pngAnchor.epa   : cur.epa;
-  document.getElementById('currentGauge').textContent = displayGauge.toFixed(2);
+  // ── Big gauge number ────────────────────────────────────────────────────
+  // Always shows the FORECASTED CURRENT level — extrapolated from the PNG
+  // anchor to right now using the trend slope. This is cur.gauge.
+  // If there is no gap (PNG is very recent), cur.gauge === pngAnchor.gauge.
+  document.getElementById('currentGauge').textContent = cur.gauge.toFixed(2);
 
-  // EPA line: exact PNG footer value + timestamp
+  // ── EPA / last reported line ────────────────────────────────────────────
   var pngEl = document.getElementById('pngReadingDisplay');
   if(pngAnchor){
+    // Show the exact last reported PNG value and its timestamp
     document.getElementById('epaLevelDisplay').textContent =
-      'EPA: '+pngAnchor.epa.toFixed(3)+' m  @  '+fmtFull(pngAnchor.ts);
-    // If there's a meaningful gap, show the extrapolated estimate underneath
+      'Last: '+pngAnchor.epa.toFixed(3)+' m TBM @ '+fmtFull(pngAnchor.ts);
+    // If we extrapolated to get the current value, say so with the rate
     var pngAgeMin = Math.round((Date.now()-pngAnchor.ts.getTime())/60000);
     if(pngAgeMin > 5 && cur.extrapolated){
-      pngEl.textContent = 'Est. now: EPA '+cur.epa.toFixed(3)+' m / gauge '+cur.gauge.toFixed(2)+' (+'+pngAgeMin+'m extrap.)';
+      var tr = computeTrend();
+      var rateStr = tr ? ' at '+(tr.slope*GAUGE_A*100>0?'+':'')+(tr.slope*GAUGE_A*100).toFixed(1)+' cm/hr' : '';
+      pngEl.textContent = 'Forecasted +'+pngAgeMin+'m'+rateStr+' → gauge '+cur.gauge.toFixed(2);
     } else {
       pngEl.textContent = '';
     }
   } else {
+    // No PNG anchor — show interpolated/extrapolated value directly
     document.getElementById('epaLevelDisplay').textContent =
       'EPA: '+cur.epa.toFixed(3)+' m (TBM)'+(cur.extrapolated?' (est.)':'');
     pngEl.textContent = '';
