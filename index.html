@@ -9,60 +9,99 @@ Claude V11.1
   <meta name="theme-color" content="#0a1628">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <link rel="manifest" href="manifest.json">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/style.css">
+  <style>
+:root{--bg:#0a1628;--surface:#0f1f3a;--surface2:#162a4a;--border:#1e3a5f;--water:#2196f3;--water-light:#64b5f6;--forecast:#f59e0b;--rising:#ef5350;--falling:#26a69a;--steady:#78909c;--text:#e8f4fd;--text-dim:#7a9cbf;--text-muted:#3d5a7a;--font-mono:'IBM Plex Mono','Courier New',monospace;--font-ui:'Inter',system-ui,sans-serif;--radius:12px}
+*{box-sizing:border-box;margin:0;padding:0}body{background:var(--bg);color:var(--text);font-family:var(--font-ui);min-height:100dvh;-webkit-font-smoothing:antialiased}
+.header{display:flex;align-items:center;gap:8px;padding:14px 18px;background:var(--surface);border-bottom:1px solid var(--border);font-weight:600;font-size:1rem;letter-spacing:.04em;color:var(--water-light);position:sticky;top:0;z-index:50}
+.header-icon{font-size:1.3rem;animation:wave 3s ease-in-out infinite}
+@keyframes wave{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
+.refresh-btn{margin-left:auto;background:none;border:1px solid var(--border);color:var(--text-dim);width:34px;height:34px;border-radius:50%;font-size:1.1rem;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.refresh-btn.spinning{animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.container{max-width:480px;margin:0 auto;padding:14px 12px 30px;display:flex;flex-direction:column;gap:12px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.gauge-card{display:flex;flex-direction:row;min-height:170px}
+.tide-bar{width:7px;background:var(--bg);flex-shrink:0;display:flex;align-items:flex-end}
+.tide-fill{width:100%;background:linear-gradient(to top,var(--water),var(--water-light));transition:height 1.4s cubic-bezier(.4,0,.2,1);min-height:4px}
+.gauge-body{flex:1;padding:18px 18px 16px 16px;display:flex;flex-direction:column;gap:10px}
+.level-display{display:flex;align-items:baseline;gap:8px}
+.level-number{font-family:var(--font-mono);font-size:3.6rem;font-weight:600;line-height:1;color:var(--water-light);letter-spacing:-.02em}
+.level-unit{font-family:var(--font-mono);font-size:.85rem;color:var(--text-dim);font-weight:300}
+.epa-level{font-family:var(--font-mono);font-size:.78rem;color:var(--text-muted)}
+.trend-row{display:flex;align-items:center;gap:8px;font-size:.88rem}
+.trend-icon{font-size:1.1rem;font-weight:600;min-width:20px}
+.trend-row.rising .trend-icon,.trend-row.rising .trend-label{color:var(--rising)}
+.trend-row.falling .trend-icon,.trend-row.falling .trend-label{color:var(--falling)}
+.trend-row.steady .trend-icon,.trend-row.steady .trend-label{color:var(--steady)}
+.trend-rate{margin-left:auto;font-family:var(--font-mono);font-size:.78rem;color:var(--text-dim)}
+.updated-row{font-size:.75rem;color:var(--text-muted);font-family:var(--font-mono)}
+.age-ok{color:var(--falling)}.age-warn{color:var(--forecast)}.age-old{color:var(--rising)}
+.forecast-card{padding:16px}
+.forecast-header{font-size:.72rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:14px}
+.forecast-grid{display:flex;align-items:center}
+.fc-col{flex:1;text-align:center;display:flex;flex-direction:column;gap:4px}
+.fc-divider{width:1px;height:54px;background:var(--border);flex-shrink:0}
+.fc-time{font-size:.72rem;color:var(--text-muted);font-family:var(--font-mono)}
+.fc-gauge{font-family:var(--font-mono);font-size:1.55rem;font-weight:600;color:var(--forecast)}
+.fc-epa{font-family:var(--font-mono);font-size:.7rem;color:var(--text-muted)}
+.forecast-note{margin-top:12px;font-size:.72rem;color:var(--text-muted);font-style:italic;text-align:center}
+.period-card{padding:10px 12px;display:flex;align-items:center;gap:10px}
+.period-label{font-size:.72rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);flex-shrink:0}
+.period-buttons{display:flex;gap:6px;flex:1;justify-content:flex-end}
+.period-btn{background:var(--bg);border:1px solid var(--border);color:var(--text-dim);border-radius:20px;padding:5px 12px;font-family:var(--font-mono);font-size:.8rem;cursor:pointer}
+.period-btn.active{background:var(--water);border-color:var(--water);color:#fff;font-weight:600}
+.chart-card{padding:14px 14px 10px}
+.chart-wrap{position:relative;height:240px}
+.chart-wrap canvas{width:100%!important}
+.chart-legend{margin-top:10px;font-size:.72rem;color:var(--text-muted);display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.legend-line{display:inline-block;width:18px;height:3px;border-radius:2px;vertical-align:middle;margin-right:3px}
+.legend-line.hist{background:var(--water)}
+.legend-line.fore{background:transparent;border-top:2px dashed var(--forecast);height:0;margin-bottom:2px}
+.status-bar{font-size:.78rem;color:var(--rising);font-family:var(--font-mono);padding:0 4px}
+.status-bar:empty{display:none}
+.epa-card{padding:14px}
+.epa-label{font-size:.72rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);margin-bottom:10px}
+#epaImage{width:100%;border-radius:8px;display:block;border:1px solid var(--border);background:var(--surface2);min-height:60px}
+.epa-meta{margin-top:8px;font-size:.7rem;color:var(--text-muted);font-family:var(--font-mono)}
+  </style>
 </head>
 <body>
 
 <header class="header">
   <span class="header-icon">〜</span>
   <span>Bangor River</span>
-  <button class="refresh-btn" id="refreshBtn" title="Refresh">↻</button>
+  <button class="refresh-btn" id="refreshBtn">↻</button>
 </header>
 
 <main class="container">
 
   <section class="card gauge-card">
-    <div class="tide-bar"><div class="tide-fill" id="tideFill"></div></div>
+    <div class="tide-bar"><div class="tide-fill" id="tideFill" style="height:20%"></div></div>
     <div class="gauge-body">
       <div class="level-display">
         <span class="level-number" id="currentGauge">--.-</span>
         <span class="level-unit">m gauge</span>
       </div>
       <div class="epa-level" id="epaLevelDisplay">EPA: --.--- m (TBM)</div>
-      <div class="trend-row" id="trendRow">
+      <div class="trend-row steady" id="trendRow">
         <span class="trend-icon" id="trendIcon">—</span>
         <span class="trend-label" id="trendLabel">Loading…</span>
         <span class="trend-rate" id="trendRate"></span>
       </div>
-      <div class="updated-row">
-        Reading: <span id="readingTime">--:--</span>&nbsp;·&nbsp;<span id="dataAge" class="age-ok">--</span>
-      </div>
+      <div class="updated-row">Reading: <span id="readingTime">--:--</span> · <span id="dataAge" class="age-ok">--</span></div>
     </div>
   </section>
 
   <section class="card forecast-card">
     <div class="forecast-header">Forecast</div>
     <div class="forecast-grid">
-      <div class="fc-col">
-        <div class="fc-time">+1 hr</div>
-        <div class="fc-gauge" id="f1Gauge">--.-</div>
-        <div class="fc-epa"  id="f1EPA">--.---</div>
-      </div>
+      <div class="fc-col"><div class="fc-time">+1 hr</div><div class="fc-gauge" id="f1Gauge">--.-</div><div class="fc-epa" id="f1EPA">--.---</div></div>
       <div class="fc-divider"></div>
-      <div class="fc-col">
-        <div class="fc-time">+3 hr</div>
-        <div class="fc-gauge" id="f3Gauge">--.-</div>
-        <div class="fc-epa"  id="f3EPA">--.---</div>
-      </div>
+      <div class="fc-col"><div class="fc-time">+3 hr</div><div class="fc-gauge" id="f3Gauge">--.-</div><div class="fc-epa" id="f3EPA">--.---</div></div>
       <div class="fc-divider"></div>
-      <div class="fc-col">
-        <div class="fc-time">+6 hr</div>
-        <div class="fc-gauge" id="f6Gauge">--.-</div>
-        <div class="fc-epa"  id="f6EPA">--.---</div>
-      </div>
+      <div class="fc-col"><div class="fc-time">+6 hr</div><div class="fc-gauge" id="f6Gauge">--.-</div><div class="fc-epa" id="f6EPA">--.---</div></div>
     </div>
     <div class="forecast-note" id="forecastNote">Based on current trend</div>
   </section>
@@ -81,37 +120,359 @@ Claude V11.1
   <section class="card chart-card">
     <div class="chart-wrap"><canvas id="levelChart"></canvas></div>
     <div class="chart-legend">
-      <span class="legend-line hist"></span> Gauge level (m)
-      &nbsp;&nbsp;<span class="legend-line fore"></span> Forecast
-      &nbsp;&nbsp;<span class="legend-now"></span> Now
+      <span class="legend-line hist"></span> Gauge (m)
+      &nbsp;<span class="legend-line fore"></span> Forecast
     </div>
   </section>
 
   <div class="status-bar" id="statusBar"></div>
 
-  <!-- Debug panel — shows data fetch progress -->
-
-  <section class="card" id="debugPanel" style="padding:12px;font-family:monospace;font-size:10px;color:#7a9cbf;white-space:pre-wrap;word-break:break-all;line-height:1.5;display:none"></section>
+  <section class="card" id="debugPanel" style="padding:12px;font-family:monospace;font-size:10px;color:#7a9cbf;white-space:pre-wrap;word-break:break-all;line-height:1.6"></section>
 
   <section class="card epa-card">
     <div class="epa-label">EPA Source — 3 Month Overview</div>
-    <img id="epaImage" src="" alt="EPA river level chart" loading="lazy">
+    <img id="epaImage" src="" alt="EPA chart" loading="lazy">
     <div class="epa-meta" id="epaMeta"></div>
   </section>
 
 </main>
 
-<!-- All CDN libraries -->
-
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 
-<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script>
+// ── Bangor River Level — all-in-one script ──────────────────────────────
+// Data source: data.json committed to repo every 15 min by GitHub Actions
+// Fallback: direct EPA fetch if data.json is stale
 
-<!-- Single bundled app script — no module imports needed -->
+var GAUGE_A = 14.664, GAUGE_B = -1452;
+var GAUGE_MIN = 0, GAUGE_MAX = 8;
+var TREND_WINDOW_H = 3;
+var allReadings = [], pngAnchor = null, activePeriodH = 6, chartInst = null;
 
-<script src="js/app.js"></script>
+function toGauge(epa){ return GAUGE_A * epa + GAUGE_B; }
+
+// ── Debug panel (always visible) ──────────────────────────────────────────
+var dbgEl = document.getElementById('debugPanel');
+function dbg(msg){
+  var t = new Date().toLocaleTimeString('en-IE',{hour12:false});
+  dbgEl.textContent += t + '  ' + msg + '\n';
+  dbgEl.scrollTop = dbgEl.scrollHeight;
+  console.log(msg);
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', function(){
+  dbg('App started');
+  setupButtons();
+  document.getElementById('refreshBtn').addEventListener('click', function(){ doRefresh(); });
+
+  // Try cache first
+  var cached = loadCache();
+  if(cached){ allReadings = cached; dbg('Cache: '+cached.length+' rows'); renderAll(); }
+
+  doRefresh();
+  // Auto-refresh aligned to EPA 15-min cycle
+  scheduleNextRefresh();
+});
+
+function scheduleNextRefresh(){
+  var ms15 = 15*60*1000;
+  var wait = (ms15 - Date.now()%ms15) + 90000; // 90s after boundary
+  dbg('Next refresh in '+Math.round(wait/60000)+'m');
+  setTimeout(function(){ doRefresh(); scheduleNextRefresh(); }, wait);
+}
+
+// ── Cache ─────────────────────────────────────────────────────────────────
+function loadCache(){
+  try{
+    var r = JSON.parse(localStorage.getItem('bangor_v5')||'null');
+    if(!r) return null;
+    return r.rows.map(function(x){ return {ts:new Date(x.ts),epa:x.epa,gauge:x.gauge,synthetic:x.synthetic}; });
+  }catch(e){ return null; }
+}
+function saveCache(rows){
+  try{ localStorage.setItem('bangor_v5', JSON.stringify({t:Date.now(),rows:rows})); }catch(e){}
+}
+
+// ── Main refresh ──────────────────────────────────────────────────────────
+function doRefresh(){
+  var btn = document.getElementById('refreshBtn');
+  btn.classList.add('spinning');
+  dbg('--- Refreshing ---');
+
+  // PRIMARY: read data.json (committed by GitHub Actions, same origin = no CORS)
+  fetch('data.json?_='+Date.now(), {cache:'no-store'})
+    .then(function(r){
+      dbg('data.json: HTTP '+r.status);
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      return r.json();
+    })
+    .then(function(json){
+      dbg('data.json: '+json.count+' rows, generated '+json.generated);
+      var rows = json.rows.map(function(x){
+        return {ts:new Date(x.ts), epa:x.epa, gauge:x.gauge, synthetic:x.synthetic||false};
+      });
+      if(json.png_anchor){
+        pngAnchor = {ts:new Date(json.png_anchor.ts), epa:json.png_anchor.epa, gauge:json.png_anchor.gauge};
+        dbg('PNG anchor: '+pngAnchor.epa.toFixed(3)+' m at '+fmt(pngAnchor.ts));
+      }
+      allReadings = rows;
+      saveCache(rows);
+      renderAll();
+      showPng();
+      btn.classList.remove('spinning');
+    })
+    .catch(function(err){
+      dbg('data.json failed: '+err.message);
+      dbg('data.json not available yet — Actions may not have run');
+      dbg('Please trigger manually: repo → Actions → Fetch EPA River Data → Run workflow');
+      setStatus('data.json not found. See debug panel below.','error');
+      btn.classList.remove('spinning');
+      if(allReadings.length>0){ dbg('Showing cached data'); renderAll(); }
+    });
+}
+
+// ── Parse timestamp ───────────────────────────────────────────────────────
+function parseTs(s){
+  if(!s) return null;
+  s = s.trim();
+  var m;
+  m = s.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if(m) return new Date(+m[1],+m[2]-1,+m[3],+m[4],+m[5]);
+  m = s.match(/^(\d{2})[./](\d{2})[./](\d{2,4})\s+(\d{2}):(\d{2})/);
+  if(m){ var yr=m[3].length===2?2000+ +m[3]:+m[3]; return new Date(yr,+m[2]-1,+m[1],+m[4],+m[5]); }
+  return null;
+}
+
+// ── Interpolate to now ────────────────────────────────────────────────────
+function interpolateNow(){
+  if(!allReadings.length) return null;
+  var now = Date.now();
+  var last = allReadings[allReadings.length-1];
+  for(var i=allReadings.length-1;i>=1;i--){
+    var a=allReadings[i-1], b=allReadings[i];
+    if(now>=a.ts.getTime()&&now<=b.ts.getTime()){
+      var f=(now-a.ts.getTime())/(b.ts.getTime()-a.ts.getTime());
+      var epa=a.epa+f*(b.epa-a.epa);
+      return {ts:new Date(now),epa:epa,gauge:toGauge(epa),extrapolated:false};
+    }
+  }
+  var gapH=(now-last.ts.getTime())/3600000;
+  var tr=computeTrend();
+  if(tr){ var epa=Math.max(last.epa+tr.slope*gapH,95); return {ts:new Date(now),epa:epa,gauge:toGauge(epa),extrapolated:true,gapH:gapH}; }
+  return {ts:new Date(now),epa:last.epa,gauge:last.gauge,extrapolated:true,gapH:gapH};
+}
+
+// ── Trend regression ──────────────────────────────────────────────────────
+function computeTrend(){
+  var csv=allReadings.filter(function(r){return !r.synthetic;});
+  if(csv.length<3) return null;
+  var cut=Date.now()-TREND_WINDOW_H*3600000;
+  var pts=csv.filter(function(r){return r.ts.getTime()>cut;});
+  if(pts.length<3) pts=csv.slice(-12);
+  var x0=pts[0].ts.getTime();
+  var xs=pts.map(function(r){return (r.ts.getTime()-x0)/3600000;});
+  var ys=pts.map(function(r){return r.epa;});
+  var n=xs.length,sX=0,sY=0,sXY=0,sX2=0;
+  for(var i=0;i<n;i++){sX+=xs[i];sY+=ys[i];sXY+=xs[i]*ys[i];sX2+=xs[i]*xs[i];}
+  var den=n*sX2-sX*sX;
+  if(Math.abs(den)<1e-9) return null;
+  var slope=(n*sXY-sX*sY)/den;
+  var intercept=(sY-slope*sX)/n;
+  var yMean=sY/n;
+  var ssTot=0,ssRes=0;
+  for(var i=0;i<n;i++){ssTot+=(ys[i]-yMean)*(ys[i]-yMean);ssRes+=Math.pow(ys[i]-(slope*xs[i]+intercept),2);}
+  var r2=ssTot<1e-12?1:1-ssRes/ssTot;
+  return {slope:slope,r2:r2,n:n};
+}
+
+function forecast(h){
+  var tr=computeTrend();
+  if(!tr||!allReadings.length) return null;
+  var last=allReadings[allReadings.length-1];
+  var gapH=(Date.now()-last.ts.getTime())/3600000;
+  var epa=Math.max(last.epa+tr.slope*(gapH+h),95);
+  return {epa:epa,gauge:toGauge(epa)};
+}
+
+// ── Render ────────────────────────────────────────────────────────────────
+function renderAll(){
+  var cur=interpolateNow();
+  if(cur) renderGauge(cur);
+  renderForecast();
+  renderGraph();
+}
+
+function renderGauge(cur){
+  document.getElementById('currentGauge').textContent = cur.gauge.toFixed(2);
+  document.getElementById('epaLevelDisplay').textContent = 'EPA: '+cur.epa.toFixed(3)+' m (TBM)'+(cur.extrapolated?' (est.)':'');
+  var pct=Math.min(Math.max((cur.gauge-GAUGE_MIN)/(GAUGE_MAX-GAUGE_MIN),0),1);
+  document.getElementById('tideFill').style.height=(pct*100)+'%';
+
+  var tr=computeTrend(), row=document.getElementById('trendRow');
+  row.className='trend-row';
+  if(tr&&Math.abs(tr.slope)>0.001){
+    var up=tr.slope>0;
+    row.classList.add(up?'rising':'falling');
+    document.getElementById('trendIcon').textContent=up?'↑':'↓';
+    document.getElementById('trendLabel').textContent=up?'Rising':'Falling';
+    document.getElementById('trendRate').textContent=(tr.slope*GAUGE_A*100>0?'+':'')+(tr.slope*GAUGE_A*100).toFixed(1)+' cm/hr';
+  } else {
+    row.classList.add('steady');
+    document.getElementById('trendIcon').textContent='—';
+    document.getElementById('trendLabel').textContent='Steady';
+    document.getElementById('trendRate').textContent='';
+  }
+
+  var last=allReadings[allReadings.length-1];
+  var age=Math.round((Date.now()-last.ts.getTime())/60000);
+  var src=last.synthetic?'PNG':'CSV';
+  document.getElementById('readingTime').textContent=fmt(last.ts)+' ('+src+')';
+  var el=document.getElementById('dataAge');
+  if(age<30){el.textContent=age+'m ago';el.className='age-ok';}
+  else if(age<120){el.textContent=age+'m ago';el.className='age-warn';}
+  else{el.textContent=(age/60).toFixed(1)+'h ago ⚠';el.className='age-old';}
+
+  if(cur.extrapolated&&cur.gapH>0.5) setStatus('Estimated — extrapolating from '+Math.round(cur.gapH*60)+'min old reading','warn');
+}
+
+function renderForecast(){
+  [{h:1,g:'f1Gauge',e:'f1EPA'},{h:3,g:'f3Gauge',e:'f3EPA'},{h:6,g:'f6Gauge',e:'f6EPA'}].forEach(function(s){
+    var fc=forecast(s.h);
+    document.getElementById(s.g).textContent=fc?fc.gauge.toFixed(2):'--.-';
+    document.getElementById(s.e).textContent=fc?fc.epa.toFixed(3):'--.---';
+  });
+  var tr=computeTrend();
+  document.getElementById('forecastNote').textContent=tr
+    ?(Math.abs(tr.slope)<0.001?'steady':tr.slope>0?'rising':'falling')+' '+Math.abs(tr.slope*GAUGE_A*100).toFixed(1)+' cm/hr · R²='+Math.round(tr.r2*100)+'% · '+tr.n+' pts'+(pngAnchor?' · PNG '+fmt(pngAnchor.ts):'')
+    :'Insufficient data for forecast';
+}
+
+// ── Chart ─────────────────────────────────────────────────────────────────
+var MONO="'IBM Plex Mono','Courier New',monospace";
+var CC={w:'#2196f3',wf:'rgba(33,150,243,0.18)',f:'#f59e0b',ff:'rgba(245,158,11,0.10)',g:'rgba(30,58,95,0.9)',t:'#3d5a7a',l:'#7a9cbf'};
+
+function renderGraph(){
+  var data=buildChartData();
+  if(!chartInst){ chartInst=makeChart(data); }
+  else{
+    chartInst.data.datasets[0].data=appendNow(data.hist,data.now);
+    chartInst.data.datasets[1].data=data.fore;
+    chartInst.options.scales.x.min=xMin();
+    chartInst.options.scales.x.max=xMax(data.fore);
+    chartInst.options.plugins.nowLine.ts=data.now?data.now.x.getTime():Date.now();
+    chartInst.update('active');
+  }
+}
+
+function buildChartData(){
+  var cut=Date.now()-activePeriodH*3600000;
+  var hist=allReadings.filter(function(r){return r.ts.getTime()>=cut;}).map(function(r){return{x:r.ts,y:+r.gauge.toFixed(3)};});
+  var cur=interpolateNow();
+  var now=cur?{x:new Date(),y:+cur.gauge.toFixed(3)}:null;
+  var fore=[], tr=computeTrend();
+  if(tr&&now){
+    fore.push({x:now.x,y:now.y});
+    for(var m=15;m<=360;m+=15){var fc=forecast(m/60);if(fc)fore.push({x:new Date(Date.now()+m*60000),y:+fc.gauge.toFixed(3)});}
+  }
+  return {hist:hist,now:now,fore:fore};
+}
+
+function appendNow(hist,now){
+  if(!now) return hist;
+  var last=hist[hist.length-1];
+  return(!last||now.x>last.x)?hist.concat([now]):hist;
+}
+
+function xMin(){ return new Date(Date.now()-activePeriodH*3600000); }
+function xMax(fore){ return fore&&fore.length?fore[fore.length-1].x:new Date(Date.now()+3600000); }
+
+var nowPlugin={id:'nowLine',afterDraw:function(ch){
+  var ctx=ch.ctx,ca=ch.chartArea,x=ch.scales.x,ts=ch.options.plugins.nowLine.ts||Date.now(),nx=x.getPixelForValue(ts);
+  if(nx<x.left||nx>x.right)return;
+  ctx.save();ctx.beginPath();ctx.moveTo(nx,ca.top);ctx.lineTo(nx,ca.bottom);
+  ctx.strokeStyle='rgba(255,255,255,0.28)';ctx.lineWidth=1.5;ctx.setLineDash([5,5]);ctx.stroke();ctx.setLineDash([]);
+  ctx.fillStyle='rgba(255,255,255,0.3)';ctx.font='9px '+MONO;ctx.textAlign='center';ctx.textBaseline='top';
+  ctx.fillText('NOW',nx,ca.top+4);ctx.restore();
+}};
+
+function makeChart(data){
+  return new Chart(document.getElementById('levelChart').getContext('2d'),{
+    type:'line',
+    data:{datasets:[
+      {label:'Gauge',data:appendNow(data.hist,data.now),borderColor:CC.w,backgroundColor:CC.wf,borderWidth:2,pointRadius:0,pointHoverRadius:4,fill:true,tension:0.3,order:2},
+      {label:'Forecast',data:data.fore,borderColor:CC.f,backgroundColor:CC.ff,borderDash:[7,4],borderWidth:2,pointRadius:0,pointHoverRadius:4,fill:true,tension:0.3,order:1},
+    ]},
+    options:{
+      responsive:true,maintainAspectRatio:false,animation:{duration:350},
+      interaction:{mode:'index',intersect:false},
+      plugins:{
+        legend:{display:false},
+        nowLine:{ts:data.now?data.now.x.getTime():Date.now()},
+        tooltip:{
+          backgroundColor:'#0a1628',borderColor:'#1e3a5f',borderWidth:1,
+          titleColor:CC.l,bodyColor:'#e8f4fd',
+          titleFont:{family:MONO,size:10},bodyFont:{family:MONO,size:12},padding:10,
+          callbacks:{
+            title:function(i){return fmtLong(new Date(i[0].parsed.x));},
+            label:function(i){return(i.datasetIndex===1?'⟢':'〜')+'  '+i.parsed.y.toFixed(3)+' m gauge';}
+          }
+        }
+      },
+      scales:{
+        x:{type:'time',min:xMin(),max:xMax(data.fore),
+          time:{displayFormats:{minute:'HH:mm',hour:'HH:mm',day:'dd MMM'}},
+          grid:{color:CC.g},ticks:{color:CC.t,font:{family:MONO,size:10},maxTicksLimit:7,maxRotation:0},border:{color:CC.g}},
+        y:{grid:{color:CC.g},
+          ticks:{color:CC.t,font:{family:MONO,size:10},callback:function(v){return v.toFixed(2);}},
+          border:{color:CC.g},
+          title:{display:true,text:'Gauge (m)',color:CC.l,font:{family:MONO,size:10}}}
+      }
+    },
+    plugins:[nowPlugin]
+  });
+}
+
+// ── EPA image ─────────────────────────────────────────────────────────────
+var PNG_URL='https://epawebapp.epa.ie/hydronet/output/internet/stations/CAS/33008/S/extralarge_3m_extralarge.png';
+function showPng(){
+  var img=document.getElementById('epaImage');
+  img.src=PNG_URL+'?_='+Date.now();
+  img.onerror=function(){img.onerror=null;img.src='https://api.allorigins.win/raw?url='+encodeURIComponent(PNG_URL)+'&_='+Date.now();};
+  var last=allReadings[allReadings.length-1];
+  var csv=allReadings.filter(function(r){return !r.synthetic;}).slice(-1)[0];
+  var parts=[];
+  if(pngAnchor) parts.push('PNG: '+pngAnchor.epa.toFixed(3)+' m @ '+fmt(pngAnchor.ts));
+  if(csv) parts.push('CSV tail: '+csv.epa.toFixed(3)+' m');
+  parts.push(allReadings.length+' readings');
+  document.getElementById('epaMeta').textContent=parts.join(' · ');
+}
+
+// ── Period buttons ────────────────────────────────────────────────────────
+function setupButtons(){
+  document.querySelectorAll('.period-btn').forEach(function(b){
+    b.addEventListener('click',function(){
+      document.querySelectorAll('.period-btn').forEach(function(x){x.classList.remove('active');});
+      b.classList.add('active');
+      activePeriodH=parseInt(b.dataset.h);
+      renderGraph();
+    });
+  });
+}
+
+// ── Status ────────────────────────────────────────────────────────────────
+function setStatus(msg,type){
+  var el=document.getElementById('statusBar');
+  el.textContent=msg;
+  el.style.color=type==='warn'?'var(--forecast)':type==='info'?'var(--text-dim)':'var(--rising)';
+}
+
+// ── Formatters ────────────────────────────────────────────────────────────
+function fmt(d){ return d.toLocaleTimeString('en-IE',{hour:'2-digit',minute:'2-digit',hour12:false}); }
+function fmtLong(d){ return d.toLocaleString('en-IE',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit',hour12:false}); }
+</script>
 
 </body>
 </html>
