@@ -198,7 +198,17 @@ function dbg(msg){
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function(){
+  // Remove any old cache versions that may have bad data
+  ['bangor_v4','bangor_v5'].forEach(function(k){ localStorage.removeItem(k); });
   dbg('App started');
+  // Wipe stale localStorage if it's more than 24h old
+  try {
+    var stored = JSON.parse(localStorage.getItem('bangor_v6')||'null');
+    if(stored && stored.t && (Date.now()-stored.t) > 24*3600*1000){
+      localStorage.removeItem('bangor_v6');
+      dbg('Stale cache cleared (>24h old)');
+    }
+  } catch(e){}
   setupButtons();
   document.getElementById('refreshBtn').addEventListener('click', function(){ doRefresh(); });
 
@@ -221,13 +231,13 @@ function scheduleNextRefresh(){
 // ── Cache ─────────────────────────────────────────────────────────────────
 function loadCache(){
   try{
-    var r = JSON.parse(localStorage.getItem('bangor_v5')||'null');
+    var r = JSON.parse(localStorage.getItem('bangor_v6')||'null');
     if(!r) return null;
     return r.rows.map(function(x){ return {ts:new Date(x.ts),epa:x.epa,gauge:x.gauge,synthetic:x.synthetic}; });
   }catch(e){ return null; }
 }
 function saveCache(rows){
-  try{ localStorage.setItem('bangor_v5', JSON.stringify({t:Date.now(),rows:rows})); }catch(e){}
+  try{ localStorage.setItem('bangor_v6', JSON.stringify({t:Date.now(),rows:rows})); }catch(e){}
 }
 
 // ── Main refresh ──────────────────────────────────────────────────────────
@@ -270,6 +280,7 @@ function doRefresh(){
         setStatus('⚠ Data '+dataAgeMin+'m old — Actions may not be running','warn');
       }
 
+      // Clear any stale cache from previous versions before saving
       allReadings = rows;
       saveCache(rows);
       renderAll();
