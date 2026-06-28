@@ -1,0 +1,232 @@
+name: Fetch EPA River Data
+
+on:
+  schedule:
+    - cron: '2,17,32,47 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install OCR tools
+        run: |
+          sudo apt-get install -y tesseract-ocr 2>/dev/null
+          pip install pytesseract Pillow --break-system-packages -q
+
+      - name: Fetch EPA data and generate data.json
+        run: |
+          python3 << 'PYEOF'
+          import urllib.request, zipfile, io, json, re, sys
+          from datetime import datetime, timezone
+
+          ZIP_URL = "https://epawebapp.epa.ie/Hydronet/output/internet/stations/CAS/33008/S/3_months.zip"
+          PNG_URL = "https://epawebapp.epa.ie/hydronet/output/internet/stations/CAS/33008/S/extralarge_3m_extralarge.png"
+
+          GAUGE_A = 14.664
+          GAUGE_B = -1452
+          def to_gauge(epa): return round(GAUGE_A * epa + GAUGE_B, 4)
+
+          PAT = r'Last\s*value\s*at\s*(\d{2})[./](\d{2})[./](\d{2,4})\s+(\d{2}):(\d{2})\s+([\d.]+)\s*m'
+
+          headers = {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              'Accept': '*/*',
+              'Referer': 'https://epawebapp.epa.ie/',
+          }
+
+          def parse_ts(s):
+              s = s.strip()
+              m = re.match(r'^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})', s)
+              if m: return datetime(int(m.group(1)),int(m.group(2)),int(m.group(3)),
+                                    int(m.group(4)),int(m.group(5)))
+              m = re.match(r'^(\d{2})[./](\d{2})[./](\d{2,4})\s+(\d{2}):(\d{2})', s)
+              if m:
+                  yr = int(m.group(3)) if len(m.group(3))==4 else 2000+int(m.group(3))
+                  return datetime(yr,int(m.group(2)),int(m.group(1)),
+                                  int(m.group(4)),int(m.group(5)))
+              return None
+
+          def extract_match(text):
+              m = re.search(PAT, text, re.I)
+              return m
+
+          # ── Fetch CSV from ZIP ─────────────────────────────────────────
+          rows = []
+          try:
+              req  = urllib.request.Request(ZIP_URL, headers=headers)
+              resp = urllib.request.urlopen(req, timeout=30)
+              data = resp.read()
+              print(f"ZIP: {len(data)} bytes")
+              z        = zipfile.ZipFile(io.BytesIO(data))
+              csv_name = next((n for n in z.namelist()
+                               if re.search(r'\.(csv|txt|dat)$',n,re.I)), z.namelist()[0])
+              raw  = z.read(csv_name)
+              try:    text = raw.decode('utf-8')
+              except: text = raw.decode('latin-1')
+              header_done = False
+              for line in text.splitlines():
+                  t = line.strip()
+                  if not t: continue
+                  if not header_done:
+                      if not re.match(r'^\d', t): continue
+                      header_done = True
+                  parts = t.split(';')
+                  if len(parts) < 3: continue
+                  ts = parse_ts(parts[0])
+                  try: epa = float(parts[2].strip())
+                  except: continue
+                  if not ts or not (95.0 <= epa <= 110.0): continue
+                  if len(parts)>3 and parts[3].strip().lower() in ('bad','missing','rejected'):
+                      continue
+                  rows.append({'ts':ts.isoformat(),'epa':round(epa,4),'gauge':to_gauge(epa)})
+              print(f"CSV rows: {len(rows)}")
+              if rows:
+                  print(f"CSV last: {rows[-1]['ts']}  epa={rows[-1]['epa']}  gauge={rows[-1]['gauge']}")
+          except Exception as e:
+              import traceback; traceback.print_exc()
+
+          # ── Fetch PNG and OCR the footer ──────────────────────────────
+          # The "Last value at DD.MM.YY HH:MM  XX.XXX m (TBM)" line is
+          # pixel-rendered in the bottom-left of the chart image.
+          # We crop the footer strip and run tesseract OCR on it.
+          png_anchor = None
+          try:
+              req       = urllib.request.Request(PNG_URL, headers=headers)
+              resp      = urllib.request.urlopen(req, timeout=30)
+              png_bytes = resp.read()
+              print(f"\nPNG: {len(png_bytes)} bytes")
+
+              from PIL import Image, ImageFilter, ImageEnhance
+              import pytesseract
+
+              img = Image.open(io.BytesIO(png_bytes))
+              W, H = img.size
+              print(f"PNG size: {W}x{H}")
+
+              found_match = None
+
+              # Try progressively larger footer crops until we find the text
+              for crop_pct in [0.15, 0.20, 0.25, 0.30]:
+                  crop_top = int(H * (1 - crop_pct))
+                  footer   = img.crop((0, crop_top, W, H))
+
+                  # Preprocess: scale up 3x, convert to greyscale, threshold
+                  scale    = 3
+                  footer   = footer.resize((footer.width*scale, footer.height*scale),
+                                           Image.LANCZOS)
+                  grey     = footer.convert('L')
+
+                  # Binary threshold — dark text on light background
+                  thresh   = grey.point(lambda p: 0 if p < 128 else 255, '1')
+
+                  # OCR config: assume single uniform block of text
+                  cfg = '--psm 6 --oem 3 -c tessedit_char_whitelist="Last value at0123456789 .:(TBM)mResponsible EnvironmentalProtectionAgency©EPA"'
+                  ocr_text = pytesseract.image_to_string(thresh, config=cfg)
+                  print(f"OCR ({int(crop_pct*100)}% crop): {repr(ocr_text[:200])}")
+
+                  m = extract_match(ocr_text)
+                  if m:
+                      found_match = m
+                      print(f"Match found at {int(crop_pct*100)}% crop: {m.group(0)}")
+                      break
+
+              # If whitelist OCR failed, retry without whitelist (broader)
+              if not found_match:
+                  crop_top = int(H * 0.80)
+                  footer   = img.crop((0, crop_top, W//2, H))  # left half only
+                  footer   = footer.resize((footer.width*3, footer.height*3), Image.LANCZOS)
+                  grey     = footer.convert('L')
+                  thresh   = grey.point(lambda p: 0 if p < 150 else 255, '1')
+                  ocr_text = pytesseract.image_to_string(thresh, config='--psm 6 --oem 3')
+                  print(f"OCR (broad, left half): {repr(ocr_text[:300])}")
+                  m = extract_match(ocr_text)
+                  if m:
+                      found_match = m
+                      print(f"Match found (broad): {m.group(0)}")
+
+              if found_match:
+                  m   = found_match
+                  yr  = int(m.group(3)) if len(m.group(3))==4 else 2000+int(m.group(3))
+                  ts  = datetime(yr,int(m.group(2)),int(m.group(1)),
+                                 int(m.group(4)),int(m.group(5)))
+                  epa = float(m.group(6))
+                  if 95.0 <= epa <= 110.0:
+                      png_anchor = {
+                          'ts':    ts.isoformat(),
+                          'epa':   round(epa,4),
+                          'gauge': to_gauge(epa),
+                      }
+                      print(f"\nPNG ANCHOR: {epa} m TBM → gauge {to_gauge(epa)} at {ts.isoformat()}")
+                  else:
+                      print(f"OCR value out of range: {epa}", file=sys.stderr)
+              else:
+                  print("WARNING: OCR could not extract footer value", file=sys.stderr)
+
+          except Exception as e:
+              import traceback
+              print(f"PNG/OCR error: {e}", file=sys.stderr)
+              traceback.print_exc(file=sys.stderr)
+
+          # ── Determine best anchor (PNG if newer, else CSV last row) ───
+          csv_last = rows[-1] if rows else None
+
+          if png_anchor and csv_last:
+              png_ts = datetime.fromisoformat(png_anchor['ts'])
+              csv_ts = datetime.fromisoformat(csv_last['ts'])
+              if png_ts >= csv_ts:
+                  anchor = png_anchor
+                  print(f"\nUsing PNG anchor (newer by {int((png_ts-csv_ts).total_seconds()/60)}m)")
+              else:
+                  anchor = csv_last
+                  print(f"\nUsing CSV last row (PNG is older by {int((csv_ts-png_ts).total_seconds()/60)}m)")
+          elif png_anchor:
+              anchor = png_anchor
+              print("\nUsing PNG anchor (no CSV)")
+          elif csv_last:
+              anchor = csv_last
+              print("\nUsing CSV last row (no PNG anchor)")
+          else:
+              print("ERROR: No data at all", file=sys.stderr)
+              sys.exit(1)
+
+          # Append anchor as synthetic row if it's newer than CSV tail
+          if csv_last and png_anchor:
+              png_ts = datetime.fromisoformat(png_anchor['ts'])
+              csv_ts = datetime.fromisoformat(csv_last['ts'])
+              if png_ts > csv_ts:
+                  rows.append({**png_anchor, 'synthetic': True})
+                  print(f"PNG appended to rows ({int((png_ts-csv_ts).total_seconds()/60)}m newer)")
+
+          # ── Write data.json ───────────────────────────────────────────
+          output = {
+              'generated':  datetime.now(timezone.utc).isoformat(),
+              'count':      len(rows),
+              'last_ts':    anchor['ts'],
+              'last_epa':   anchor['epa'],
+              'last_gauge': anchor['gauge'],
+              'png_anchor': png_anchor,
+              'rows':       rows,
+          }
+          with open('data.json','w') as f:
+              json.dump(output, f, separators=(',',':'))
+          print(f"\nSUCCESS: {len(rows)} rows, anchor={anchor['ts']} epa={anchor['epa']}")
+          PYEOF
+
+      - name: Commit data.json
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data.json
+          if git diff --staged --quiet; then
+            echo "No changes to data.json"
+          else
+            git commit -m "data: EPA fetch $(date -u '+%Y-%m-%d %H:%M UTC')"
+            git push
+          fi
