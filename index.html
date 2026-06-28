@@ -37,6 +37,11 @@ Claude V11.1
 .trend-row.steady .trend-icon,.trend-row.steady .trend-label{color:var(--steady)}
 .trend-rate{margin-left:auto;font-family:var(--font-mono);font-size:.78rem;color:var(--text-dim)}
 .updated-row{font-size:.75rem;color:var(--text-muted);font-family:var(--font-mono)}
+.reading-block{display:flex;flex-direction:column;gap:4px}
+.block-label{font-size:.68rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);font-family:var(--font-mono)}
+.block-divider{height:1px;background:var(--border);margin:8px 0}
+.forecast-number{color:var(--forecast)}
+.forecast-detail{color:var(--forecast);margin-top:-2px}
 .age-ok{color:var(--falling)}.age-warn{color:var(--forecast)}.age-old{color:var(--rising)}
 .forecast-card{padding:16px}
 .forecast-header{font-size:.72rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:14px}
@@ -80,19 +85,43 @@ Claude V11.1
   <section class="card gauge-card">
     <div class="tide-bar"><div class="tide-fill" id="tideFill" style="height:20%"></div></div>
     <div class="gauge-body">
-      <div class="level-display">
-        <span class="level-number" id="currentGauge">--.-</span>
-        <span class="level-unit">gauge</span>
-      </div>
-      <div class="epa-level" id="epaLevelDisplay">EPA: --.--- m (TBM)</div>
-      <div class="epa-level" id="pngReadingDisplay" style="color:var(--forecast);margin-top:-4px"></div>
-      <div class="trend-row steady" id="trendRow">
-        <span class="trend-icon" id="trendIcon">—</span>
-        <span class="trend-label" id="trendLabel">Loading…</span>
-        <span class="trend-rate" id="trendRate"></span>
-      </div>
-      <div class="updated-row">Reading: <span id="readingTime">--:--</span> · <span id="dataAge" class="age-ok">--</span></div>
+
+```
+  <!-- BLOCK 1: Last reported EPA reading -->
+  <div class="reading-block">
+    <div class="block-label">Last reading · <span id="readingTime">--:--</span> · <span id="dataAge" class="age-ok">--</span></div>
+    <div class="level-display">
+      <span class="level-number" id="currentGauge">--.-</span>
+      <span class="level-unit">gauge</span>
     </div>
+    <div class="epa-level" id="epaLevelDisplay">EPA: --.--- m (TBM)</div>
+  </div>
+
+  <div class="block-divider"></div>
+
+  <!-- BLOCK 2: Forecast to current time -->
+  <div class="reading-block" id="forecastBlock">
+    <div class="block-label">Now (forecast)</div>
+    <div class="level-display">
+      <span class="level-number forecast-number" id="nowGauge">--.-</span>
+      <span class="level-unit">gauge</span>
+    </div>
+    <div class="epa-level" id="nowEpaDisplay">EPA: --.--- m (TBM)</div>
+    <div class="epa-level forecast-detail" id="forecastDetail"></div>
+  </div>
+
+  <div class="block-divider"></div>
+
+  <!-- Trend -->
+  <div class="trend-row steady" id="trendRow">
+    <span class="trend-icon" id="trendIcon">—</span>
+    <span class="trend-label" id="trendLabel">Loading…</span>
+    <span class="trend-rate" id="trendRate"></span>
+  </div>
+
+</div>
+```
+
   </section>
 
   <section class="card forecast-card">
@@ -207,22 +236,40 @@ function doRefresh(){
   btn.classList.add('spinning');
   dbg('--- Refreshing ---');
 
-  // PRIMARY: read data.json (committed by GitHub Actions, same origin = no CORS)
+  // PRIMARY: fetch data.json — committed by GitHub Actions every 15 min
+  // No CORS issues (same origin). Always use fresh data.json over localStorage.
   fetch('data.json?_='+Date.now(), {cache:'no-store'})
     .then(function(r){
-      dbg('data.json: HTTP '+r.status);
+      dbg('data.json: HTTP '+r.status+' ('+Math.round(r.headers.get('content-length')||0)+' bytes)');
       if(!r.ok) throw new Error('HTTP '+r.status);
       return r.json();
     })
     .then(function(json){
       dbg('data.json: '+json.count+' rows, generated '+json.generated);
+      dbg('CSV last: '+json.last_ts+'  epa='+json.last_epa+'  gauge='+json.last_gauge);
+
       var rows = json.rows.map(function(x){
         return {ts:new Date(x.ts), epa:x.epa, gauge:x.gauge, synthetic:x.synthetic||false};
       });
-      if(json.png_anchor){
-        pngAnchor = {ts:new Date(json.png_anchor.ts), epa:json.png_anchor.epa, gauge:json.png_anchor.gauge};
-        dbg('PNG anchor: '+pngAnchor.epa.toFixed(3)+' m at '+fmt(pngAnchor.ts));
+
+      // Use the CSV last row as pngAnchor (most recent known reading)
+      // PNG has no text metadata — CSV is the authoritative source
+      if(json.last_ts && json.last_epa != null){
+        pngAnchor = {
+          ts:    new Date(json.last_ts),
+          epa:   json.last_epa,
+          gauge: json.last_gauge,
+        };
+        dbg('Anchor set: epa='+pngAnchor.epa.toFixed(3)+' gauge='+pngAnchor.gauge.toFixed(3)+' at '+fmtFull(pngAnchor.ts));
       }
+
+      // Check how old the data is
+      var dataAgeMin = Math.round((Date.now() - new Date(json.generated).getTime()) / 60000);
+      dbg('data.json age: '+dataAgeMin+' min since Actions ran');
+      if(dataAgeMin > 30){
+        setStatus('⚠ Data '+dataAgeMin+'m old — Actions may not be running','warn');
+      }
+
       allReadings = rows;
       saveCache(rows);
       renderAll();
@@ -230,12 +277,18 @@ function doRefresh(){
       btn.classList.remove('spinning');
     })
     .catch(function(err){
-      dbg('data.json failed: '+err.message);
-      dbg('data.json not available yet — Actions may not have run');
-      dbg('Please trigger manually: repo → Actions → Fetch EPA River Data → Run workflow');
-      setStatus('data.json not found. See debug panel below.','error');
+      dbg('data.json FAILED: '+err.message);
+      dbg('Fix: Actions tab → Fetch EPA River Data → Run workflow');
+      setStatus('⚠ Cannot load data.json — trigger workflow manually','error');
       btn.classList.remove('spinning');
-      if(allReadings.length>0){ dbg('Showing cached data'); renderAll(); }
+      // Fall back to localStorage cache but warn clearly
+      if(allReadings.length>0){
+        dbg('Using localStorage cache: '+allReadings.length+' rows');
+        var cacheTs = allReadings[allReadings.length-1].ts;
+        var cacheAgeH = ((Date.now()-cacheTs.getTime())/3600000).toFixed(1);
+        setStatus('⚠ Showing cached data from '+cacheAgeH+'h ago — data.json unavailable','warn');
+        renderAll();
+      }
     });
 }
 
@@ -322,36 +375,45 @@ function renderAll(){
 }
 
 function renderGauge(cur){
-  // ── Big gauge number ────────────────────────────────────────────────────
-  // Always shows the FORECASTED CURRENT level — extrapolated from the PNG
-  // anchor to right now using the trend slope. This is cur.gauge.
-  // If there is no gap (PNG is very recent), cur.gauge === pngAnchor.gauge.
-  document.getElementById('currentGauge').textContent = cur.gauge.toFixed(2);
+  // ── BLOCK 1: Last reported reading (the anchor — PNG or CSV last row) ──
+  var anchor = pngAnchor || (allReadings.length ? allReadings[allReadings.length-1] : null);
 
-  // ── EPA / last reported line ────────────────────────────────────────────
-  var pngEl = document.getElementById('pngReadingDisplay');
-  if(pngAnchor){
-    // Show the exact last reported PNG value and its timestamp
-    document.getElementById('epaLevelDisplay').textContent =
-      'Last: '+pngAnchor.epa.toFixed(3)+' m TBM @ '+fmtFull(pngAnchor.ts);
-    // If we extrapolated to get the current value, say so with the rate
-    var pngAgeMin = Math.round((Date.now()-pngAnchor.ts.getTime())/60000);
-    if(pngAgeMin > 5 && cur.extrapolated){
-      var tr = computeTrend();
-      var rateStr = tr ? ' at '+(tr.slope*GAUGE_A*100>0?'+':'')+(tr.slope*GAUGE_A*100).toFixed(1)+' cm/hr' : '';
-      pngEl.textContent = 'Forecasted +'+pngAgeMin+'m'+rateStr+' → gauge '+cur.gauge.toFixed(2);
-    } else {
-      pngEl.textContent = '';
-    }
-  } else {
-    // No PNG anchor — show interpolated/extrapolated value directly
-    document.getElementById('epaLevelDisplay').textContent =
-      'EPA: '+cur.epa.toFixed(3)+' m (TBM)'+(cur.extrapolated?' (est.)':'');
-    pngEl.textContent = '';
+  if(anchor){
+    document.getElementById('currentGauge').textContent = anchor.gauge.toFixed(2);
+    document.getElementById('epaLevelDisplay').textContent = 'EPA: '+anchor.epa.toFixed(3)+' m (TBM)';
+    var age = Math.round((Date.now()-anchor.ts.getTime())/60000);
+    document.getElementById('readingTime').textContent = fmtFull(anchor.ts);
+    var ageEl = document.getElementById('dataAge');
+    if(age<30){ageEl.textContent=age+'m ago';ageEl.className='age-ok';}
+    else if(age<120){ageEl.textContent=age+'m ago';ageEl.className='age-warn';}
+    else{ageEl.textContent=(age/60).toFixed(1)+'h ago ⚠';ageEl.className='age-old';}
   }
+
+  // ── BLOCK 2: Forecast to current time ──────────────────────────────────
+  var forecastBlock = document.getElementById('forecastBlock');
+  var nowGaugeEl    = document.getElementById('nowGauge');
+  var nowEpaEl      = document.getElementById('nowEpaDisplay');
+  var detailEl      = document.getElementById('forecastDetail');
+  var pngAgeMin     = anchor ? Math.round((Date.now()-anchor.ts.getTime())/60000) : 0;
+
+  if(pngAgeMin > 5 && cur.extrapolated){
+    // Show forecast block — gap is meaningful
+    forecastBlock.style.display = '';
+    nowGaugeEl.textContent = cur.gauge.toFixed(2);
+    nowEpaEl.textContent   = 'EPA: '+cur.epa.toFixed(3)+' m (TBM)';
+    var tr = computeTrend();
+    var rateStr = tr ? (tr.slope*GAUGE_A*100>0?'+':'')+(tr.slope*GAUGE_A*100).toFixed(1)+' cm/hr' : 'trend unknown';
+    detailEl.textContent = '+'+pngAgeMin+'m at '+rateStr;
+  } else {
+    // Gap is tiny — forecast == last reading, hide forecast block
+    forecastBlock.style.display = 'none';
+  }
+
+  // Tide bar uses forecast level (current best estimate)
   var pct=Math.min(Math.max((cur.gauge-GAUGE_MIN)/(GAUGE_MAX-GAUGE_MIN),0),1);
   document.getElementById('tideFill').style.height=(pct*100)+'%';
 
+  // ── Trend row ───────────────────────────────────────────────────────────
   var tr=computeTrend(), row=document.getElementById('trendRow');
   row.className='trend-row';
   if(tr&&Math.abs(tr.slope)>0.001){
@@ -366,17 +428,6 @@ function renderGauge(cur){
     document.getElementById('trendLabel').textContent='Steady';
     document.getElementById('trendRate').textContent='';
   }
-
-  // Always show PNG anchor as the reference time — it's the most recent EPA reading
-  var refPoint = pngAnchor || allReadings[allReadings.length-1];
-  var age=Math.round((Date.now()-refPoint.ts.getTime())/60000);
-  document.getElementById('readingTime').textContent = fmtFull(refPoint.ts);
-  var el=document.getElementById('dataAge');
-  if(age<30){el.textContent=age+'m ago';el.className='age-ok';}
-  else if(age<120){el.textContent=age+'m ago';el.className='age-warn';}
-  else{el.textContent=(age/60).toFixed(1)+'h ago ⚠';el.className='age-old';}
-
-  if(cur.extrapolated&&cur.gapH>0.5) setStatus('Estimated — extrapolating from '+Math.round(cur.gapH*60)+'min old reading','warn');
 }
 
 function renderForecast(){
@@ -485,7 +536,7 @@ function showPng(){
   var last=allReadings[allReadings.length-1];
   var csv=allReadings.filter(function(r){return !r.synthetic;}).slice(-1)[0];
   var parts=[];
-  if(pngAnchor) parts.push('PNG last value: '+pngAnchor.epa.toFixed(3)+' m TBM @ '+fmtFull(pngAnchor.ts));
+  if(pngAnchor) parts.push('Last reading: '+pngAnchor.epa.toFixed(3)+' m TBM @ '+fmtFull(pngAnchor.ts));
   if(csv) parts.push('CSV tail: '+csv.epa.toFixed(3)+' m');
   parts.push(allReadings.length+' readings');
   document.getElementById('epaMeta').textContent=parts.join(' · ');
